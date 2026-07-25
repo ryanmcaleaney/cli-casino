@@ -11,14 +11,19 @@
 /*
  * Bet token grammar:
  *   NAME                  e.g. "red"
- *   NAME:V                e.g. "straight:17"
- *   NAME:V,V[,V...]       e.g. "split:17,20"
- * NAME is [A-Za-z0-9,]+ (games may interpret it freely, e.g. dice "2d6"
- * or blackjack action lists "h,s").
+ *   NAME:V,V[,V...]       e.g. "straight:17", "split:17,20"
+ *   NAME:WORDS            e.g. "hold:none", "deal:ah,kh,qh,jh,10h"
+ * NAME is [A-Za-z0-9,-]+ (games may interpret it freely, e.g. dice "2d6",
+ * blackjack action lists "h,s", craps "dont-pass").  A leading '-' still
+ * means an option; names must start with an alphanumeric.
+ * The value part is parsed into values[] when it is an integer list;
+ * otherwise nvalues stays 0 and the game interprets vraw.  Either way the
+ * lowercased value text is kept in vraw.
  */
 typedef struct bet {
     char raw[64];               /* original token, for display */
     char name[32];              /* lowercased name part */
+    char vraw[32];              /* lowercased value part, "" if none */
     int  values[BET_MAX_VALUES];
     int  nvalues;
 } bet_t;
@@ -44,5 +49,8 @@ int cli_parse(int argc, char **argv, cli_t *out, char *err, size_t errlen);
 
 /* Case-insensitive bet-name compare. */
 bool bet_is(const bet_t *b, const char *name);
+
+/* True if the token carried any value part (integers or words). */
+bool bet_has_value(const bet_t *b);
 
 #endif

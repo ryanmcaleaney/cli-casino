@@ -13,7 +13,7 @@ int coin_run(const cli_t *cli, rng_t *rng)
                             "(valid: heads, tails)\n", b->raw);
             return 2;
         }
-        if (b->nvalues != 0) {
+        if (bet_has_value(b)) {
             fprintf(stderr, "coin: bet '%s' takes no value\n", b->raw);
             return 2;
         }

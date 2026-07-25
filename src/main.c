@@ -11,8 +11,11 @@
 #include "games/baccarat.h"
 #include "games/blackjack.h"
 #include "games/coin.h"
+#include "games/craps.h"
 #include "games/gdice.h"
 #include "games/roulette.h"
+#include "games/slots.h"
+#include "games/videopoker.h"
 
 const game_t GAMES[] = {
     { "roulette",  "European roulette",       roulette_run, roulette_list_bets },
@@ -22,9 +25,10 @@ const game_t GAMES[] = {
     { "baccarat",  "Punto Banco baccarat",    baccarat_run, baccarat_list_bets },
     { "blackjack", "blackjack (single deck, S17)", blackjack_run,
                                                    blackjack_list_bets },
-    { "craps",     "craps (planned)",         NULL, NULL },
-    { "slots",     "slot machine (planned)",  NULL, NULL },
-    { "videopoker","video poker (planned)",   NULL, NULL },
+    { "craps",     "craps (pass-line rounds)", craps_run,   craps_list_bets },
+    { "slots",     "6-reel slot machine",     slots_run,    slots_list_bets },
+    { "videopoker","Jacks or Better video poker", videopoker_run,
+                                                  videopoker_list_bets },
     { "war",       "casino war (planned)",    NULL, NULL },
     { "threecard", "three-card poker (planned)", NULL, NULL },
     { "chuckaluck","chuck-a-luck (planned)",  NULL, NULL },

@@ -20,6 +20,7 @@ static int parse_bet_token(const char *tok, bet_t *b, char *err, size_t errlen)
         return fail(err, errlen, "bet '%s': token too long", tok);
     snprintf(b->raw, sizeof b->raw, "%s", tok);
     b->nvalues = 0;
+    b->vraw[0] = '\0';
 
     const char *colon = strchr(tok, ':');
     size_t namelen = colon ? (size_t)(colon - tok) : strlen(tok);
@@ -29,7 +30,7 @@ static int parse_bet_token(const char *tok, bet_t *b, char *err, size_t errlen)
         return fail(err, errlen, "bet '%s': name too long", tok);
     for (size_t i = 0; i < namelen; i++) {
         unsigned char c = (unsigned char)tok[i];
-        if (!isalnum(c) && c != ',')
+        if (!isalnum(c) && c != ',' && c != '-')
             return fail(err, errlen,
                         "bet '%s': invalid character in bet name", tok);
         b->name[i] = (char)tolower(c);
@@ -42,26 +43,37 @@ static int parse_bet_token(const char *tok, bet_t *b, char *err, size_t errlen)
     const char *p = colon + 1;
     if (*p == '\0')
         return fail(err, errlen, "bet '%s': missing value after ':'", tok);
+    if (strlen(p) >= sizeof b->vraw)
+        return fail(err, errlen, "bet '%s': value too long", tok);
+    for (size_t i = 0; p[i]; i++)
+        b->vraw[i] = (char)tolower((unsigned char)p[i]);
+    b->vraw[strlen(p)] = '\0';
 
+    /* Try a strict integer list; anything else stays word-form in vraw
+     * (e.g. "hold:none") for the game to interpret or reject. */
+    int vals[BET_MAX_VALUES];
+    int nv = 0;
     while (*p) {
-        if (b->nvalues >= BET_MAX_VALUES)
-            return fail(err, errlen, "bet '%s': too many values", tok);
+        if (nv >= BET_MAX_VALUES)
+            return 0;
         char *end;
         errno = 0;
         long v = strtol(p, &end, 10);
         if (end == p || errno != 0 || v < INT_MIN || v > INT_MAX)
-            return fail(err, errlen, "bet '%s': values must be integers", tok);
-        b->values[b->nvalues++] = (int)v;
+            return 0;
+        vals[nv++] = (int)v;
         p = end;
         if (*p == ',') {
             p++;
             if (*p == '\0')
-                return fail(err, errlen, "bet '%s': trailing comma", tok);
+                return 0;
         } else if (*p != '\0') {
-            return fail(err, errlen,
-                        "bet '%s': expected ',' between values", tok);
+            return 0;
         }
     }
+    for (int i = 0; i < nv; i++)
+        b->values[i] = vals[i];
+    b->nvalues = nv;
     return 0;
 }
 
@@ -147,4 +159,9 @@ int cli_parse(int argc, char **argv, cli_t *out, char *err, size_t errlen)
 bool bet_is(const bet_t *b, const char *name)
 {
     return strcasecmp(b->name, name) == 0;
+}
+
+bool bet_has_value(const bet_t *b)
+{
+    return b->nvalues != 0 || b->vraw[0] != '\0';
 }

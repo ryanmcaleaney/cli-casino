@@ -216,6 +216,221 @@ expect_grep "bac symlink invocation" '"game":"baccarat"' \
     sh -c "./baccarat banker --seed 3 --json"
 rm -f baccarat
 
+# --- slots --------------------------------------------------------------
+expect_exit "slots spin exits 0"     0 $C slots --seed 1
+expect_exit "slots takes no bets"    2 $C slots red
+expect_exit "slots bet with value"   2 $C slots line:1
+
+# every payout category, pinned to deterministic seeds
+expect_grep "slots jackpot 4xSEVEN" "^JACKPOT$"   $C slots --seed 143 --quiet
+expect_grep "slots big win 4xBAR"   "^BIG_WIN$"   $C slots --seed 84  --quiet
+expect_grep "slots 4xBELL win"      "^WIN$"       $C slots --seed 92  --quiet
+expect_grep "slots 4xCHERRY win"    "^WIN$"       $C slots --seed 5   --quiet
+expect_grep "slots three-cherry"    "^SMALL_WIN$" $C slots --seed 26  --quiet
+expect_grep "slots loss"            "^LOSS$"      $C slots --seed 1   --quiet
+# four of a non-paying symbol is still a loss
+expect_grep "slots 4xLEMON loses"   "^LOSS$"      $C slots --seed 25  --quiet
+expect_grep "slots 4xLEMON reels" \
+    '"reels":\["BELL","LEMON","ORANGE","LEMON","LEMON","LEMON"\]' \
+    $C slots --seed 25 --json
+
+a=$($C slots --seed 123 --json)
+b=$($C slots --seed 123 --json)
+[ "$a" = "$b" ] && ok || bad "slots seeded runs identical"
+
+expect_grep "slots normal reels" \
+    "\[ .* \] \[ .* \] \[ .* \] \[ .* \] \[ .* \] \[ .* \]" $C slots --seed 1
+expect_grep "slots payout line"   "Payout: 100:1" $C slots --seed 143
+expect_grep "slots json game key" '"game":"slots"'  $C slots --seed 143 --json
+expect_grep "slots json reels" \
+    '"reels":\["SEVEN","SEVEN","LEMON","SEVEN","SEVEN","BAR"\]' \
+    $C slots --seed 143 --json
+expect_grep "slots json result"   '"result":"jackpot"' $C slots --seed 143 --json
+expect_grep "slots json payout"   '"payout":"100:1"'   $C slots --seed 143 --json
+expect_grep "slots help works"    "usage:"    $C slots --help
+expect_grep "slots list-bets"     "JACKPOT"   $C slots --list-bets
+
+n=$($C slots --seed 7 --iterations 5 --quiet | wc -l)
+[ "$n" -eq 5 ] && ok || bad "slots iterations produce 5 lines (got $n)"
+
+expect_grep "slots stats table" "RESULT" $C slots --seed 3 --iterations 200 --stats
+expect_grep "slots stats json"  '"iterations":200' \
+    $C slots --seed 3 --iterations 200 --stats --json
+
+# sanity: jackpot (4+ SEVEN of 6 reels) over 100k seeded spins near 0.12%
+jp=$($C slots --seed 3 --iterations 100000 --stats --json |
+     sed 's/.*"jackpot":\([0-9]*\).*/\1/')
+[ "$jp" -gt 60 ] && [ "$jp" -lt 220 ] && ok || \
+    bad "slots jackpot rate plausible (got $jp / 100000)"
+
+ln -sf casino slots
+expect_grep "slots symlink invocation" '"game":"slots"' \
+    sh -c "./slots --seed 1 --json"
+rm -f slots
+
+# --- craps --------------------------------------------------------------
+# validation
+expect_exit "craps no bet"          2 $C craps --seed 1
+expect_exit "craps unknown bet"     2 $C craps banana
+expect_exit "craps hard:5"          2 $C craps hard:5
+expect_exit "craps hard no value"   2 $C craps hard
+expect_exit "craps hard bad value"  2 $C craps hard:x
+expect_exit "craps pass with value" 2 $C craps pass:1
+expect_exit "craps multi bets ok"   0 $C craps pass field hard:8 --seed 3
+
+# pass line branches (comeout: seed 1 = 7, 13 = 3, 20 = 2, 21 = 12)
+expect_grep "craps pass natural 7 win" "^WIN$"  $C craps pass --seed 1 --quiet
+expect_grep "craps pass one-roll round" '"rolls":\[\[2,5\]\]' \
+    $C craps pass --seed 1 --json
+expect_grep "craps pass craps-3 loss"  "^LOSS$" $C craps pass --seed 13 --quiet
+expect_grep "craps pass craps-2 loss"  "^LOSS$" $C craps pass --seed 20 --quiet
+expect_grep "craps pass craps-12 loss" "^LOSS$" $C craps pass --seed 21 --quiet
+expect_grep "craps point established"  '"point":8' $C craps pass --seed 3 --json
+expect_grep "craps seven-out loses"    "^LOSS$" $C craps pass --seed 3 --quiet
+expect_grep "craps point made wins"    "^WIN$"  $C craps pass --seed 8 --quiet
+expect_grep "craps transcript" "Come-out: " $C craps pass --seed 3
+
+# don't pass branches (same dice as pass, mirrored)
+expect_grep "craps dp 3 wins"     "^WIN$"  $C craps dont-pass --seed 13 --quiet
+expect_grep "craps dp 2 wins"     "^WIN$"  $C craps dont-pass --seed 20 --quiet
+expect_grep "craps dp 7 loses"    "^LOSS$" $C craps dont-pass --seed 1 --quiet
+expect_grep "craps dp 12 pushes"  "^PUSH$" $C craps dont-pass --seed 21 --quiet
+expect_grep "craps dp seven-out wins" "^WIN$" $C craps dont-pass --seed 3 --quiet
+expect_grep "craps dontpass alias ok" "^WIN$" $C craps dontpass --seed 3 --quiet
+
+# field (come-out roll only; 2 pays 2:1, 12 pays 3:1)
+expect_grep "craps field 2 wins 2:1"  '"payout":"2:1"' $C craps field --seed 20 --json
+expect_grep "craps field 12 wins 3:1" '"payout":"3:1"' $C craps field --seed 21 --json
+expect_grep "craps field 8 loses"     "^LOSS$" $C craps field --seed 3 --quiet
+
+# hardways: every win, loss by easy way, loss by 7, unresolved push
+expect_grep "craps hard:4 win 7:1"  '"result":"win","payout":"7:1"' \
+    $C craps hard:4 --seed 12 --json
+expect_grep "craps hard:6 win 9:1"  '"result":"win","payout":"9:1"' \
+    $C craps hard:6 --seed 3 --json
+expect_grep "craps hard:8 win"      "^WIN$" $C craps hard:8 --seed 8 --quiet
+expect_grep "craps hard:10 win"     "^WIN$" $C craps hard:10 --seed 7 --quiet
+# seed 3 come-out is 3+5=8: hard:8 loses the easy way immediately
+expect_grep "craps hard:8 easy-way loss" "^LOSS$" $C craps hard:8 --seed 3 --quiet
+# seed 3 never rolls a 4 before the seven-out: hard:4 loses to the 7
+expect_grep "craps hard:4 seven loss"    "^LOSS$" $C craps hard:4 --seed 3 --quiet
+# seed 2 resolves on the come-out (11): hard:10 is never decided
+expect_grep "craps hard:10 push"         "^PUSH$" $C craps hard:10 --seed 2 --quiet
+
+# output modes and determinism
+expect_grep "craps json game key" '"game":"craps"' $C craps pass --seed 3 --json
+expect_grep "craps json rolls"    '"rolls":\[\[3,5\]' $C craps pass --seed 3 --json
+expect_grep "craps quiet multi"   "^pass=L field=L hard:8=L$" \
+    $C craps pass field hard:8 --seed 3 --quiet
+expect_grep "craps help works"    "usage:"    $C craps --help
+expect_grep "craps list-bets"     "come-out"  $C craps --list-bets
+
+a=$($C craps pass field hard:8 --seed 42 --json)
+b=$($C craps pass field hard:8 --seed 42 --json)
+[ "$a" = "$b" ] && ok || bad "craps seeded runs identical"
+
+n=$($C craps pass --seed 7 --iterations 5 --quiet | wc -l)
+[ "$n" -eq 5 ] && ok || bad "craps iterations produce 5 lines (got $n)"
+
+expect_grep "craps stats table" "PUSHES" \
+    $C craps pass --seed 7 --iterations 200 --stats
+expect_grep "craps stats json"  '"iterations":200' \
+    $C craps pass --seed 7 --iterations 200 --stats --json
+
+# sanity: pass wins ~49.3% of rounds over 50k seeded rounds
+pw=$($C craps pass --seed 11 --iterations 50000 --stats --json |
+     sed 's/.*"wins":\([0-9]*\).*/\1/')
+[ "$pw" -gt 23800 ] && [ "$pw" -lt 25400 ] && ok || \
+    bad "craps pass win rate plausible (got $pw / 50000)"
+
+ln -sf casino craps
+expect_grep "craps symlink invocation" '"game":"craps"' \
+    sh -c "./craps pass --seed 3 --json"
+rm -f craps
+
+# --- videopoker ---------------------------------------------------------
+# every hand category, deterministic via the deal: evaluation hook
+expect_grep "vp royal flush"      "^ROYAL_FLUSH$"     $C videopoker deal:10h,jh,qh,kh,ah --quiet
+expect_grep "vp straight flush"   "^STRAIGHT_FLUSH$"  $C videopoker deal:5s,6s,7s,8s,9s --quiet
+expect_grep "vp four of a kind"   "^FOUR_OF_A_KIND$"  $C videopoker deal:9c,9d,9h,9s,2c --quiet
+expect_grep "vp full house"       "^FULL_HOUSE$"      $C videopoker deal:kc,kd,kh,2s,2c --quiet
+expect_grep "vp flush"            "^FLUSH$"           $C videopoker deal:2h,5h,9h,jh,kh --quiet
+expect_grep "vp straight"         "^STRAIGHT$"        $C videopoker deal:5c,6d,7h,8s,9c --quiet
+expect_grep "vp ace-low straight" "^STRAIGHT$"        $C videopoker deal:ac,2d,3h,4s,5c --quiet
+expect_grep "vp ace-high straight" "^STRAIGHT$"       $C videopoker deal:10c,jd,qh,ks,ac --quiet
+expect_grep "vp no wraparound"    "^HIGH_CARD$"       $C videopoker deal:qc,kd,ah,2s,3c --quiet
+expect_grep "vp three of a kind"  "^THREE_OF_A_KIND$" $C videopoker deal:7c,7d,7h,2s,9c --quiet
+expect_grep "vp two pair"         "^TWO_PAIR$"        $C videopoker deal:4c,4d,9h,9s,kc --quiet
+expect_grep "vp pair of jacks"    "^JACKS_OR_BETTER$" $C videopoker deal:jc,jd,3h,7s,9c --quiet
+expect_grep "vp pair of aces"     "^JACKS_OR_BETTER$" $C videopoker deal:ac,ad,3h,7s,9c --quiet
+expect_grep "vp pair of tens is low" "^LOW_PAIR$"     $C videopoker deal:10c,10d,3h,7s,9c --quiet
+expect_grep "vp high card"        "^HIGH_CARD$"       $C videopoker deal:2c,5d,9h,jc,kh --quiet
+expect_grep "vp royal payout 250" '"payout":250' \
+    $C videopoker deal:10h,jh,qh,kh,ah --json
+
+# holds: none, all, partial with position semantics (seed 1 deals
+# Kd 7c Jc 6h 5c; holding 1,3 must keep Kd and Jc in place)
+expect_exit "vp hold none"  0 $C videopoker hold:none --seed 1
+expect_grep "vp hold all keeps hand" \
+    '"initial_hand":\["Kd","7c","Jc","6h","5c"\],"held":\[1,2,3,4,5\],"final_hand":\["Kd","7c","Jc","6h","5c"\]' \
+    $C videopoker hold:all --seed 1 --json
+expect_grep "vp partial hold positions" '"final_hand":\["Kd",.*,"Jc",' \
+    $C videopoker hold:1,3 --seed 1 --json
+expect_grep "vp held array" '"held":\[1,3\]' \
+    $C videopoker hold:1,3 --seed 1 --json
+expect_grep "vp hold none redraws all" '"held":\[\]' \
+    $C videopoker hold:none --seed 1 --json
+
+# validation
+expect_exit "vp duplicate hold"    2 $C videopoker hold:1,1
+expect_exit "vp hold out of range" 2 $C videopoker hold:6
+expect_exit "vp hold zero"         2 $C videopoker hold:0
+expect_exit "vp malformed hold"    2 $C videopoker hold:x
+expect_exit "vp bare hold"         2 $C videopoker hold
+expect_exit "vp multiple holds"    2 $C videopoker hold:1 hold:2
+expect_exit "vp unknown argument"  2 $C videopoker red
+expect_exit "vp malformed deal"    2 $C videopoker deal:zz
+expect_exit "vp short deal"        2 $C videopoker deal:ah,kh
+expect_exit "vp duplicate card"    2 $C videopoker deal:ah,ah,2c,3c,4c
+expect_exit "vp deal plus hold"    2 $C videopoker deal:2c,5d,9h,jc,kh hold:1
+
+# output modes and determinism
+a=$($C videopoker hold:1,3 --seed 123 --json)
+b=$($C videopoker hold:1,3 --seed 123 --json)
+[ "$a" = "$b" ] && ok || bad "vp seeded runs identical"
+
+expect_grep "vp json game key" '"game":"videopoker"' \
+    $C videopoker hold:none --seed 1 --json
+expect_grep "vp json variant"  '"variant":"jacks_or_better"' \
+    $C videopoker hold:none --seed 1 --json
+expect_grep "vp transcript"    "Final hand:" $C videopoker hold:1,3 --seed 1
+expect_grep "vp help works"    "usage:"      $C videopoker --help
+expect_grep "vp list-bets"     "ROYAL_FLUSH" $C videopoker --list-bets
+
+# interactive: piped holds are used, EOF keeps the dealt hand
+expect_exit "vp interactive piped" 0 sh -c "echo 1,3 | $C videopoker --seed 1"
+expect_grep "vp interactive EOF quiet clean" "^HIGH_CARD$" \
+    sh -c "$C videopoker --seed 1 --quiet </dev/null 2>/dev/null"
+
+n=$($C videopoker hold:none --seed 7 --iterations 5 --quiet | wc -l)
+[ "$n" -eq 5 ] && ok || bad "vp iterations produce 5 lines (got $n)"
+
+expect_grep "vp stats table" "CATEGORY" \
+    $C videopoker hold:none --seed 7 --iterations 200 --stats
+expect_grep "vp stats json"  '"iterations":200' \
+    $C videopoker hold:none --seed 7 --iterations 200 --stats --json
+
+# sanity: any-pair rate over 100k discard-all hands near 42.3%
+pr=$($C videopoker hold:none --seed 5 --iterations 100000 --stats --json |
+     sed 's/.*"low_pair":\([0-9]*\).*/\1/')
+[ "$pr" -gt 27500 ] && [ "$pr" -lt 31000 ] && ok || \
+    bad "vp low pair rate plausible (got $pr / 100000)"
+
+ln -sf casino videopoker
+expect_grep "vp symlink invocation" '"game":"videopoker"' \
+    sh -c "./videopoker hold:none --seed 1 --json"
+rm -f videopoker
+
 echo
 echo "passed: $pass  failed: $fail"
 [ "$fail" -eq 0 ]

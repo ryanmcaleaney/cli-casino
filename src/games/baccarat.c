@@ -147,7 +147,7 @@ int baccarat_run(const cli_t *cli, rng_t *rng)
                         "(valid: player, banker, tie)\n", b->raw);
         return 2;
     }
-    if (b->nvalues != 0) {
+    if (bet_has_value(b)) {
         fprintf(stderr, "baccarat: bet '%s' takes no value\n", b->raw);
         return 2;
     }

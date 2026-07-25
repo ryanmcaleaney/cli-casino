@@ -119,7 +119,7 @@ static int script_build(const cli_t *cli, bj_script_t *sc)
 
     for (int i = 0; i < cli->nbets; i++) {
         const bet_t *b = &cli->bets[i];
-        if (b->nvalues != 0) {
+        if (bet_has_value(b)) {
             fprintf(stderr, "blackjack: action '%s' takes no value\n",
                     b->raw);
             return 2;

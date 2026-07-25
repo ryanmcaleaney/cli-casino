@@ -47,7 +47,7 @@ static int verr(char *err, size_t len, const char *raw, const char *msg)
 static int validate_simple(const bet_t *b, rbet_t *rb, rbet_kind_t kind,
                            char *err, size_t len)
 {
-    if (b->nvalues != 0)
+    if (bet_has_value(b))
         return verr(err, len, b->raw, "this bet takes no value");
     rb->kind = kind;
     rb->payout = (kind == RB_DOZEN || kind == RB_COLUMN) ? 2 : 1;

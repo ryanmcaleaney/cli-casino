@@ -42,7 +42,7 @@ int gdice_run(const cli_t *cli, rng_t *rng)
     for (int i = 0; i < cli->nbets; i++) {
         const bet_t *b = &cli->bets[i];
         int c, m;
-        if (b->nvalues == 0 && parse_spec(b->name, &c, &m)) {
+        if (!bet_has_value(b) && parse_spec(b->name, &c, &m)) {
             if (spec_seen) {
                 fprintf(stderr, "dice: multiple dice specs given\n");
                 return 2;
