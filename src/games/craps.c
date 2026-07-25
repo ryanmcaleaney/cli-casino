@@ -227,10 +227,12 @@ int craps_run(const cli_t *cli, rng_t *rng)
     long wins[CLI_MAX_BETS] = { 0 };
     long losses[CLI_MAX_BETS] = { 0 };
     long pushes[CLI_MAX_BETS] = { 0 };
+    long total_rolls = 0;
 
     for (long it = 0; it < cli->iterations; it++) {
         craps_round_t rd;
         play_round(rng, bets, nbets, &rd, stdout, display);
+        total_rolls += rd.nrolls;
 
         for (int i = 0; i < nbets; i++) {
             if (bets[i].res == RES_WIN)
@@ -300,9 +302,11 @@ int craps_run(const cli_t *cli, rng_t *rng)
     }
 
     if (cli->stats) {
+        double avg_rolls = (double)total_rolls / (double)cli->iterations;
         if (cli->json) {
-            printf("{\"game\":\"craps\",\"iterations\":%ld,\"bets\":[",
-                   cli->iterations);
+            printf("{\"game\":\"craps\",\"iterations\":%ld,"
+                   "\"avg_rolls\":%.4f,\"bets\":[",
+                   cli->iterations, avg_rolls);
             for (int i = 0; i < nbets; i++) {
                 if (i)
                     printf(",");
@@ -313,6 +317,13 @@ int craps_run(const cli_t *cli, rng_t *rng)
                        (double)wins[i] / (double)cli->iterations);
             }
             printf("]}\n");
+        } else if (cli->quiet) {
+            for (int i = 0; i < nbets; i++)
+                printf("bet=%s runs=%ld wins=%ld losses=%ld pushes=%ld "
+                       "win_rate=%.4f avg_rolls=%.4f\n", bets[i].raw,
+                       cli->iterations, wins[i], losses[i], pushes[i],
+                       (double)wins[i] / (double)cli->iterations,
+                       avg_rolls);
         } else {
             printf("Iterations: %ld\n", cli->iterations);
             printf("%-12s %8s %8s %8s %9s\n",
@@ -321,6 +332,7 @@ int craps_run(const cli_t *cli, rng_t *rng)
                 printf("%-12s %8ld %8ld %8ld %9.4f\n", bets[i].raw,
                        wins[i], losses[i], pushes[i],
                        100.0 * (double)wins[i] / (double)cli->iterations);
+            printf("Avg rolls/round: %.4f\n", avg_rolls);
         }
     }
     return 0;

@@ -63,6 +63,13 @@ int coin_run(const cli_t *cli, rng_t *rng)
                        (double)wins[i] / (double)cli->iterations);
             }
             printf("]}\n");
+        } else if (cli->quiet) {
+            for (int i = 0; i < cli->nbets; i++)
+                printf("bet=%s runs=%ld wins=%ld losses=%ld "
+                       "hit_rate=%.4f\n", cli->bets[i].raw,
+                       cli->iterations, wins[i],
+                       cli->iterations - wins[i],
+                       (double)wins[i] / (double)cli->iterations);
         } else {
             printf("Iterations: %ld\n", cli->iterations);
             for (int i = 0; i < cli->nbets; i++)

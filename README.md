@@ -30,6 +30,24 @@ To remove generated files:
 make clean
 ```
 
+## Install on Linux
+
+The included installer builds the program, installs `casino`, and creates
+game-name symlinks in `/usr/local/bin`:
+
+```sh
+sudo ./install.sh
+```
+
+To install without elevated privileges:
+
+```sh
+./install.sh --prefix "$HOME/.local"
+```
+
+For distribution-package staging, use `DESTDIR` (for example,
+`DESTDIR=/tmp/package-root ./install.sh --prefix /usr`).
+
 ## Usage
 
 ```sh

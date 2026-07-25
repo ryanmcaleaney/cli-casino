@@ -431,6 +431,94 @@ expect_grep "vp symlink invocation" '"game":"videopoker"' \
     sh -c "./videopoker hold:none --seed 1 --json"
 rm -f videopoker
 
+# --- ASCII card art (CASINO_CARDS=art forces on; piped default is plain) --
+expect_grep "art card border"  "┌─────────┐ ┌─────────┐" \
+    env CASINO_CARDS=art $C baccarat player --seed 2
+expect_grep "art rank 10 left"  "│10       │" \
+    env CASINO_CARDS=art $C videopoker deal:10h,jh,qh,kh,ah
+expect_grep "art rank 10 right" "│       10│" \
+    env CASINO_CARDS=art $C videopoker deal:10h,jh,qh,kh,ah
+expect_grep "art ace"    "│A        │" env CASINO_CARDS=art $C videopoker deal:as,7d,kh,2c,5s
+expect_grep "art spades" "♠" env CASINO_CARDS=art $C videopoker deal:as,7d,kh,2c,5s
+expect_grep "art diamonds" "♦" env CASINO_CARDS=art $C videopoker deal:as,7d,kh,2c,5s
+expect_grep "art hearts" "♥" env CASINO_CARDS=art $C videopoker deal:as,7d,kh,2c,5s
+expect_grep "art clubs"  "♣" env CASINO_CARDS=art $C videopoker deal:as,7d,kh,2c,5s
+expect_grep "art hidden hole card" "│░░░░░░░░░│" \
+    env CASINO_CARDS=art $C blackjack --seed 1 s
+expect_grep "art vp positions" "1           2           3           4           5" \
+    env CASINO_CARDS=art $C videopoker deal:as,7d,kh,2c,5s
+# machine output is art-free even when art is forced
+expect_grep "art quiet unchanged" "^\(WIN\|LOSS\|PUSH\|BLACKJACK\)$" \
+    sh -c "CASINO_CARDS=art $C blackjack --seed 5 s --quiet 2>/dev/null"
+expect_grep "art json unchanged" '^{"game":"blackjack"' \
+    sh -c "CASINO_CARDS=art $C blackjack --seed 5 s --json 2>/dev/null"
+# piped (non-TTY) default stays plain
+if $C blackjack --seed 1 s | grep -q "┌"; then
+    bad "piped output stays plain"
+else
+    ok
+fi
+
+# --- --runs (shared simulation mode: --iterations N + implied --stats) ---
+expect_exit "runs=1 valid"        0 $C roulette red --runs 1 --seed 1
+expect_exit "runs=10 valid"       0 $C slots --runs 10 --seed 1
+expect_exit "runs zero rejected"  2 $C roulette red --runs 0
+expect_exit "runs negative"       2 $C roulette red --runs -5
+expect_exit "runs malformed"      2 $C roulette red --runs x
+expect_exit "runs fractional"     2 $C roulette red --runs 1.5
+
+# games that cannot run non-interactively must refuse simulation
+expect_exit "runs bj needs script"  2 $C blackjack --runs 10
+expect_exit "runs vp needs hold"    2 $C videopoker --runs 10
+expect_exit "runs bj script ok"     0 $C blackjack s --runs 10 --seed 1
+expect_exit "runs vp hold ok"       0 $C videopoker hold:none --runs 10 --seed 1
+
+# deterministic seeded aggregates
+a=$($C craps pass --runs 10000 --seed 42 --json)
+b=$($C craps pass --runs 10000 --seed 42 --json)
+[ "$a" = "$b" ] && ok || bad "runs seeded aggregates identical"
+
+# counters sum to runs (baccarat quiet line: wins+losses+pushes == runs)
+line=$($C baccarat banker --runs 1000 --seed 9 --quiet)
+sum=$(echo "$line" | sed 's/.*wins=\([0-9]*\) losses=\([0-9]*\) pushes=\([0-9]*\).*/\1+\2+\3/')
+[ "$(( $sum ))" -eq 1000 ] && ok || bad "runs counters sum to N (got $line)"
+# and the outcome distribution sums too
+dsum=$(echo "$line" | sed 's/.*player=\([0-9]*\) banker=\([0-9]*\) tie=\([0-9]*\).*/\1+\2+\3/')
+[ "$(( $dsum ))" -eq 1000 ] && ok || bad "runs distribution sums to N"
+
+# per-game stats shapes
+expect_grep "runs roulette expected" "EXP%" $C roulette red --runs 100 --seed 1
+expect_grep "runs roulette json expected" '"expected_hit_rate":0.486486' \
+    $C roulette red --runs 100 --seed 1 --json
+expect_grep "runs bj busts"     "dealer busts"    $C blackjack s --runs 100 --seed 1
+expect_grep "runs bj json busts" '"player_busts":' \
+    $C blackjack s --runs 100 --seed 1 --json
+expect_grep "runs bac outcomes" "OUTCOME"         $C baccarat banker --runs 100 --seed 1
+expect_grep "runs bac json distribution" '"distribution":{"player":' \
+    $C baccarat banker --runs 100 --seed 1 --json
+expect_grep "runs craps avg rolls" "Avg rolls/round:" $C craps pass --runs 100 --seed 1
+expect_grep "runs craps json avg"  '"avg_rolls":'  $C craps pass --runs 100 --seed 1 --json
+expect_grep "runs slots quiet"  "^runs=100 jackpot=" $C slots --runs 100 --seed 1 --quiet
+expect_grep "runs vp quiet"     " return="        $C videopoker hold:none --runs 100 --seed 1 --quiet
+expect_grep "runs dice json"    '"game":"dice"'   $C dice 2d6 total:7 --runs 100 --seed 1 --json
+expect_grep "runs coin quiet"   "^bet=heads runs=100 wins=" \
+    $C coin heads --runs 100 --seed 1 --quiet
+expect_grep "runs quiet one-liner" \
+    "^bet=red runs=1000 wins=[0-9]* losses=[0-9]* hit_rate=0\." \
+    $C roulette red --runs 1000 --seed 123 --quiet
+
+# no per-round output leaks in runs mode
+n=$($C roulette red --runs 1000 --seed 1 --quiet | wc -l)
+[ "$n" -eq 1 ] && ok || bad "runs quiet is a single line (got $n)"
+n=$($C blackjack s --runs 1000 --seed 1 --json | wc -l)
+[ "$n" -eq 1 ] && ok || bad "runs json is a single line (got $n)"
+
+# large run: seeded 100k spins, wins deterministic and plausible
+w=$($C roulette red --runs 100000 --seed 9 --json |
+    sed 's/.*"wins":\([0-9]*\).*/\1/')
+[ "$w" -gt 47500 ] && [ "$w" -lt 49800 ] && ok || \
+    bad "runs 100k plausible (got $w)"
+
 echo
 echo "passed: $pass  failed: $fail"
 [ "$fail" -eq 0 ]

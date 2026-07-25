@@ -136,6 +136,20 @@ int cli_parse(int argc, char **argv, cli_t *out, char *err, size_t errlen)
                                 "--iterations: '%s' must be a positive "
                                 "integer", val);
                 out->iterations = n;
+            } else if (strncmp(arg, "--runs", 6) == 0 &&
+                       (arg[6] == '\0' || arg[6] == '=')) {
+                /* --runs N == --iterations N with implied --stats */
+                if (opt_value(argc, argv, &i, "--runs", &val, err, errlen))
+                    return -1;
+                char *end;
+                errno = 0;
+                long n = strtol(val, &end, 10);
+                if (end == val || *end != '\0' || errno != 0 || n < 1)
+                    return fail(err, errlen,
+                                "--runs: '%s' must be a positive integer",
+                                val);
+                out->iterations = n;
+                out->stats = true;
             } else {
                 return fail(err, errlen, "unknown option '%s'", arg);
             }

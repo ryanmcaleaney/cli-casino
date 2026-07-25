@@ -112,10 +112,32 @@ int gdice_run(const cli_t *cli, rng_t *rng)
     }
 
     if (cli->stats) {
-        printf("Iterations: %ld (%dd%d)\n", cli->iterations, count, sides);
-        for (int i = 0; i < nbets; i++)
-            printf("%s: %ld wins (%.4f%%)\n", bets[i]->raw, wins[i],
-                   100.0 * (double)wins[i] / (double)cli->iterations);
+        if (cli->json) {
+            printf("{\"game\":\"dice\",\"spec\":\"%dd%d\","
+                   "\"iterations\":%ld,\"bets\":[", count, sides,
+                   cli->iterations);
+            for (int i = 0; i < nbets; i++) {
+                if (i)
+                    printf(",");
+                printf("{\"bet\":");
+                json_string(stdout, bets[i]->raw);
+                printf(",\"wins\":%ld,\"hit_rate\":%.6f}", wins[i],
+                       (double)wins[i] / (double)cli->iterations);
+            }
+            printf("]}\n");
+        } else if (cli->quiet) {
+            for (int i = 0; i < nbets; i++)
+                printf("bet=%s runs=%ld wins=%ld losses=%ld "
+                       "hit_rate=%.4f\n", bets[i]->raw, cli->iterations,
+                       wins[i], cli->iterations - wins[i],
+                       (double)wins[i] / (double)cli->iterations);
+        } else {
+            printf("Iterations: %ld (%dd%d)\n", cli->iterations, count,
+                   sides);
+            for (int i = 0; i < nbets; i++)
+                printf("%s: %ld wins (%.4f%%)\n", bets[i]->raw, wins[i],
+                       100.0 * (double)wins[i] / (double)cli->iterations);
+        }
     }
     return 0;
 }

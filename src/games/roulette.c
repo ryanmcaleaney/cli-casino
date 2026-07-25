@@ -201,6 +201,15 @@ static bool rbet_wins(const rbet_t *rb, int spin)
     return false;
 }
 
+/* Exact win probability: count winning numbers over all 37 outcomes. */
+static double rbet_expected(const rbet_t *rb)
+{
+    int cnt = 0;
+    for (int s = 0; s <= 36; s++)
+        cnt += rbet_wins(rb, s);
+    return (double)cnt / 37.0;
+}
+
 /* ---- output ------------------------------------------------------ */
 
 static const char *spin_color(int n)
@@ -284,26 +293,36 @@ int roulette_run(const cli_t *cli, rng_t *rng)
                 printf("{\"bet\":");
                 json_string(stdout, cli->bets[i].raw);
                 printf(",\"payout\":\"%d:1\",\"plays\":%ld,\"wins\":%ld,"
-                       "\"hit_rate\":%.6f,\"net_units\":%ld}",
+                       "\"hit_rate\":%.6f,\"expected_hit_rate\":%.6f,"
+                       "\"net_units\":%ld}",
                        rbets[i].payout, cli->iterations, wins[i],
-                       (double)wins[i] / (double)cli->iterations, net[i]);
+                       (double)wins[i] / (double)cli->iterations,
+                       rbet_expected(&rbets[i]), net[i]);
             }
             printf("]}\n");
+        } else if (cli->quiet) {
+            for (int i = 0; i < cli->nbets; i++)
+                printf("bet=%s runs=%ld wins=%ld losses=%ld "
+                       "hit_rate=%.4f expected=%.4f net=%+ld\n",
+                       cli->bets[i].raw, cli->iterations, wins[i],
+                       cli->iterations - wins[i],
+                       (double)wins[i] / (double)cli->iterations,
+                       rbet_expected(&rbets[i]), net[i]);
         } else {
             printf("Iterations: %ld\n", cli->iterations);
             size_t w = strlen("BET");
             for (int i = 0; i < cli->nbets; i++)
                 if (strlen(cli->bets[i].raw) > w)
                     w = strlen(cli->bets[i].raw);
-            printf("%-*s  %-8s  %-10s  %-8s  %s\n", (int)w, "BET",
-                   "PAYOUT", "WINS", "HIT%", "NET(units)");
+            printf("%-*s  %-8s  %-10s  %-8s  %-8s  %s\n", (int)w, "BET",
+                   "PAYOUT", "WINS", "HIT%", "EXP%", "NET(units)");
             for (int i = 0; i < cli->nbets; i++) {
                 char pay[12];
                 snprintf(pay, sizeof pay, "%d:1", rbets[i].payout);
-                printf("%-*s  %-8s  %-10ld  %-8.4f  %+ld\n",
+                printf("%-*s  %-8s  %-10ld  %-8.4f  %-8.4f  %+ld\n",
                        (int)w, cli->bets[i].raw, pay, wins[i],
                        100.0 * (double)wins[i] / (double)cli->iterations,
-                       net[i]);
+                       100.0 * rbet_expected(&rbets[i]), net[i]);
             }
         }
     }

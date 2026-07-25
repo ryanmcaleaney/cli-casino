@@ -6,6 +6,7 @@
 #include <string.h>
 #include <strings.h>
 
+#include "cardart.h"
 #include "cards.h"
 #include "output.h"
 
@@ -71,6 +72,18 @@ static void hand_print(FILE *f, const char *label, const bj_hand_t *h,
 {
     char buf[8];
     int  show = hide_hole ? 1 : h->n;
+
+    if (cardart_enabled(f)) {
+        bool hidden[BJ_MAX_CARDS] = { false };
+        for (int i = 1; i < h->n; i++)
+            hidden[i] = hide_hole;
+        if (hide_hole)
+            fprintf(f, "%s:\n", label);
+        else
+            fprintf(f, "%s (%d):\n", label, hand_value(h));
+        cardart_hand(f, h->cards, hidden, h->n);
+        return;
+    }
 
     fprintf(f, "%s:", label);
     for (int i = 0; i < show; i++) {
@@ -293,6 +306,11 @@ int blackjack_run(const cli_t *cli, rng_t *rng)
         return 2;
 
     bool interactive = (sc.n == 0);
+    if (interactive && cli->stats) {
+        fprintf(stderr, "blackjack: simulation (--runs/--stats) needs "
+                        "scripted actions, e.g. 's' or 'h,s'\n");
+        return 2;
+    }
     bool machine = cli->quiet || cli->json || cli->stats;
     /* Interactive play needs the table visible even when stdout is
      * reserved for machine output, so the transcript moves to stderr. */
@@ -300,6 +318,7 @@ int blackjack_run(const cli_t *cli, rng_t *rng)
     bool display = interactive || (!machine && cli->iterations == 1);
 
     long counts[4] = { 0 };
+    long pbust = 0, dbust = 0;
 
     for (long it = 0; it < cli->iterations; it++) {
         bj_hand_t   player, dealer;
@@ -314,6 +333,8 @@ int blackjack_run(const cli_t *cli, rng_t *rng)
                        actions, &nact, &r))
             return 2;
         counts[r]++;
+        pbust += hand_value(&player) > 21;
+        dbust += hand_value(&dealer) > 21;
 
         if (cli->stats)
             continue;
@@ -343,21 +364,34 @@ int blackjack_run(const cli_t *cli, rng_t *rng)
     }
 
     if (cli->stats) {
+        double wr = (double)(counts[BJ_WIN] + counts[BJ_BLACKJACK]) /
+                    (double)cli->iterations;
         if (cli->json) {
             printf("{\"game\":\"blackjack\",\"iterations\":%ld,"
                    "\"results\":{\"win\":%ld,\"loss\":%ld,\"push\":%ld,"
-                   "\"blackjack\":%ld},\"win_rate\":%.6f}\n",
+                   "\"blackjack\":%ld},\"player_busts\":%ld,"
+                   "\"dealer_busts\":%ld,\"win_rate\":%.6f}\n",
                    cli->iterations, counts[BJ_WIN], counts[BJ_LOSS],
-                   counts[BJ_PUSH], counts[BJ_BLACKJACK],
-                   (double)(counts[BJ_WIN] + counts[BJ_BLACKJACK]) /
-                       (double)cli->iterations);
+                   counts[BJ_PUSH], counts[BJ_BLACKJACK], pbust, dbust,
+                   wr);
+        } else if (cli->quiet) {
+            printf("runs=%ld wins=%ld losses=%ld pushes=%ld "
+                   "blackjacks=%ld player_busts=%ld dealer_busts=%ld "
+                   "win_rate=%.4f\n",
+                   cli->iterations, counts[BJ_WIN], counts[BJ_LOSS],
+                   counts[BJ_PUSH], counts[BJ_BLACKJACK], pbust, dbust,
+                   wr);
         } else {
             printf("Iterations: %ld\n", cli->iterations);
-            printf("%-10s %8s %9s\n", "RESULT", "COUNT", "RATE%");
+            printf("%-14s %8s %9s\n", "RESULT", "COUNT", "RATE%");
             for (int i = 0; i < 4; i++)
-                printf("%-10s %8ld %9.4f\n", RESULT_JSON[i], counts[i],
+                printf("%-14s %8ld %9.4f\n", RESULT_JSON[i], counts[i],
                        100.0 * (double)counts[i] /
                            (double)cli->iterations);
+            printf("%-14s %8ld %9.4f\n", "player busts", pbust,
+                   100.0 * (double)pbust / (double)cli->iterations);
+            printf("%-14s %8ld %9.4f\n", "dealer busts", dbust,
+                   100.0 * (double)dbust / (double)cli->iterations);
         }
     }
     return 0;

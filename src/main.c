@@ -58,6 +58,7 @@ static void global_usage(FILE *f)
         "  --seed N        deterministic PRNG seed (reproducible)\n"
         "  --iterations N  play N rounds\n"
         "  --stats         summary statistics instead of per-round output\n"
+        "  --runs N        shorthand for --iterations N --stats\n"
         "\n"
         "games:\n");
     for (int i = 0; i < NGAMES; i++)

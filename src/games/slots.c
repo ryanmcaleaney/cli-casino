@@ -158,6 +158,11 @@ int slots_run(const cli_t *cli, rng_t *rng)
                 printf(":%ld", counts[i]);
             }
             printf("}}\n");
+        } else if (cli->quiet) {
+            printf("runs=%ld", cli->iterations);
+            for (int i = 4; i >= 0; i--)
+                printf(" %s=%ld", RESULT_JSON[i], counts[i]);
+            printf("\n");
         } else {
             printf("Iterations: %ld\n", cli->iterations);
             printf("%-10s %8s %9s\n", "RESULT", "COUNT", "RATE%");

@@ -5,6 +5,7 @@
 #include <string.h>
 #include <strings.h>
 
+#include "cardart.h"
 #include "cards.h"
 #include "output.h"
 #include "poker.h"
@@ -185,6 +186,16 @@ static int parse_deal(const char *s, card_t cards[5])
 static void print_hand(FILE *f, const card_t hand[5])
 {
     char buf[8];
+
+    if (cardart_enabled(f)) {
+        cardart_hand(f, hand, NULL, 5);
+        /* position labels centred under each card, for hold input */
+        for (int i = 0; i < 5; i++)
+            fprintf(f, "%s%*s%d%*s", i ? " " : "",
+                    CARDART_WIDTH / 2, "", i + 1, CARDART_WIDTH / 2, "");
+        fputc('\n', f);
+        return;
+    }
     for (int i = 0; i < 5; i++) {
         card_name(hand[i], buf, sizeof buf);
         fprintf(f, "%d: %s\n", i + 1, buf);
@@ -277,6 +288,11 @@ int videopoker_run(const cli_t *cli, rng_t *rng)
     }
 
     bool interactive = !scripted && !fixed_deal;
+    if (interactive && cli->stats) {
+        fprintf(stderr, "videopoker: simulation (--runs/--stats) needs a "
+                        "hold strategy, e.g. hold:none or hold:1,3\n");
+        return 2;
+    }
     bool machine = cli->quiet || cli->json || cli->stats;
     FILE *disp = machine ? stderr : stdout;
     bool display = !machine && cli->iterations == 1;
@@ -383,6 +399,12 @@ int videopoker_run(const cli_t *cli, rng_t *rng)
                 printf(":%ld%s", counts[i], i ? "," : "");
             }
             printf("},\"return\":%.6f}\n",
+                   (double)won / (double)cli->iterations);
+        } else if (cli->quiet) {
+            printf("runs=%ld", cli->iterations);
+            for (int i = VP_NCATS - 1; i >= 0; i--)
+                printf(" %s=%ld", VP_JSON[i], counts[i]);
+            printf(" return=%.4f\n",
                    (double)won / (double)cli->iterations);
         } else {
             printf("Iterations: %ld\n", cli->iterations);

@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "cardart.h"
 #include "cards.h"
 #include "output.h"
 
@@ -48,6 +49,12 @@ static int hand_total(const bac_hand_t *h)
 static void hand_print(FILE *f, const char *label, const bac_hand_t *h)
 {
     char buf[8];
+
+    if (cardart_enabled(f)) {
+        fprintf(f, "%s (%d):\n", label, hand_total(h));
+        cardart_hand(f, h->cards, NULL, h->n);
+        return;
+    }
 
     fprintf(f, "%s:", label);
     for (int i = 0; i < h->n; i++) {
@@ -155,6 +162,7 @@ int baccarat_run(const cli_t *cli, rng_t *rng)
     bool machine = cli->quiet || cli->json || cli->stats;
     bool display = !machine && cli->iterations == 1;
     long counts[3] = { 0 };
+    long outcomes[3] = { 0 };
 
     for (long it = 0; it < cli->iterations; it++) {
         bac_hand_t player, banker;
@@ -166,6 +174,7 @@ int baccarat_run(const cli_t *cli, rng_t *rng)
                         : outcome == BAC_TIE ? BAC_PUSH
                                               : BAC_LOSS;
         counts[r]++;
+        outcomes[outcome]++;
 
         if (cli->stats)
             continue;
@@ -202,15 +211,31 @@ int baccarat_run(const cli_t *cli, rng_t *rng)
                    cli->iterations);
             json_string(stdout, b->name);
             printf(",\"results\":{\"win\":%ld,\"loss\":%ld,\"push\":%ld},"
-                   "\"win_rate\":%.6f}\n",
+                   "\"distribution\":{\"player\":%ld,\"banker\":%ld,"
+                   "\"tie\":%ld},\"win_rate\":%.6f}\n",
                    counts[BAC_WIN], counts[BAC_LOSS], counts[BAC_PUSH],
+                   outcomes[BAC_PLAYER], outcomes[BAC_BANKER],
+                   outcomes[BAC_TIE],
                    (double)counts[BAC_WIN] / (double)cli->iterations);
+        } else if (cli->quiet) {
+            printf("runs=%ld wins=%ld losses=%ld pushes=%ld "
+                   "win_rate=%.4f player=%ld banker=%ld tie=%ld\n",
+                   cli->iterations, counts[BAC_WIN], counts[BAC_LOSS],
+                   counts[BAC_PUSH],
+                   (double)counts[BAC_WIN] / (double)cli->iterations,
+                   outcomes[BAC_PLAYER], outcomes[BAC_BANKER],
+                   outcomes[BAC_TIE]);
         } else {
             printf("Iterations: %ld\n", cli->iterations);
             printf("%-10s %8s %9s\n", "RESULT", "COUNT", "RATE%");
             for (int i = 0; i < 3; i++)
                 printf("%-10s %8ld %9.4f\n", RESULT_JSON[i], counts[i],
                        100.0 * (double)counts[i] / (double)cli->iterations);
+            printf("%-10s %8s %9s\n", "OUTCOME", "COUNT", "RATE%");
+            for (int i = 0; i < 3; i++)
+                printf("%-10s %8ld %9.4f\n", SIDE_JSON[i], outcomes[i],
+                       100.0 * (double)outcomes[i] /
+                           (double)cli->iterations);
         }
     }
     return 0;
