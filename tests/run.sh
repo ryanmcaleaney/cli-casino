@@ -126,6 +126,96 @@ expect_grep "bj symlink invocation" '"game":"blackjack"' \
     sh -c "./blackjack --seed 42 s --json"
 rm -f blackjack
 
+# --- baccarat -----------------------------------------------------------
+expect_exit "bac player bet"        0 $C baccarat player --seed 1
+expect_exit "bac banker bet"        0 $C baccarat banker --seed 1
+expect_exit "bac tie bet"           0 $C baccarat tie --seed 1
+expect_exit "bac unknown bet"       2 $C baccarat foo --seed 1
+expect_exit "bac no bet"            2 $C baccarat --seed 1
+expect_exit "bac bet takes no value" 2 $C baccarat player:5 --seed 1
+expect_exit "bac too many bets"     2 $C baccarat player banker --seed 1
+
+# naturals end the round immediately (no third card either side)
+expect_grep "bac natural player 9, banker untouched" "Banker: Jc 2d = 2" \
+    $C baccarat player --seed 2
+expect_grep "bac natural player 9 shown"  "Player: 2s 7h = 9" \
+    $C baccarat player --seed 2
+expect_grep "bac natural banker 8, player untouched" "Player: Js 5h = 5" \
+    $C baccarat banker --seed 4
+expect_grep "bac natural banker 8 shown"  "Banker: 5c 3c = 8" \
+    $C baccarat banker --seed 4
+
+# player third-card rule: draws on <=5, stands on 6/7
+expect_grep "bac player draws on 5"  "Player: Kd Jc 5c = 5" \
+    $C baccarat player --seed 1
+expect_grep "bac player stands on 7" "Player: Qs 7s = 7" \
+    $C baccarat player --seed 9
+
+# banker third-card table: representative rows/boundaries, verified against
+# a reference implementation swept over seeds 1-8000 (0 mismatches)
+expect_grep "bac banker 0 draws when player stands on 6" \
+    "Banker: Kc Jh Ac = 1" $C baccarat player --seed 84
+expect_grep "bac banker 3 draws, p3=5"  "Banker: 7c 6h Js = 3" \
+    $C baccarat player --seed 1
+expect_grep "bac banker 3 stands, p3=8" "Banker: Ad 2h = 3" \
+    $C baccarat player --seed 7
+expect_grep "bac banker 4 draws, p3=2"  "Banker: 9h 5c Ac = 5" \
+    $C baccarat player --seed 237
+expect_grep "bac banker 4 stands, p3=0" "Banker: 4d 10s = 4" \
+    $C baccarat player --seed 111
+expect_grep "bac banker 5 draws, p3=4"  "Banker: 4s Ac 4h = 9" \
+    $C baccarat player --seed 283
+expect_grep "bac banker 5 stands, p3=2" "Banker: 8h 7d = 5" \
+    $C baccarat player --seed 334
+expect_grep "bac banker 6 draws, p3=6"  "Banker: 3h 3d 10s = 6" \
+    $C baccarat player --seed 501
+expect_grep "bac banker 6 stands, p3=5" "Banker: 6d Jc = 6" \
+    $C baccarat player --seed 140
+expect_grep "bac banker 7 always stands" "Banker: 3d 4h = 7" \
+    $C baccarat player --seed 56
+expect_grep "bac banker 6 stands when player stands" "Banker: 7s 9d = 6" \
+    $C baccarat player --seed 20
+
+# tie: player/banker bets push, tie bet wins
+expect_grep "bac tie pushes player bet" "PUSH" $C baccarat player --seed 109
+expect_grep "bac tie pushes banker bet" "PUSH" $C baccarat banker --seed 109
+expect_grep "bac tie bet wins on tie"   "WIN"  $C baccarat tie    --seed 109
+
+# output modes
+expect_grep "bac quiet compact" "^\(WIN\|LOSS\|PUSH\)$" \
+    sh -c "$C baccarat player --seed 1 --quiet"
+expect_grep "bac json game key"   '"game":"baccarat"'      $C baccarat banker --seed 3 --json
+expect_grep "bac json outcome"    '"outcome":"banker"'      $C baccarat banker --seed 3 --json
+expect_grep "bac json result"     '"result":"win"'          $C baccarat banker --seed 3 --json
+expect_grep "bac json hands"      '"cards":\["3s","9c","Kc"\]' \
+    $C baccarat banker --seed 3 --json
+expect_grep "bac help works"      "usage:"     $C baccarat --help
+expect_grep "bac list-bets works" "Punto Banco" $C baccarat --list-bets
+
+a=$($C baccarat banker --seed 42 --json)
+b=$($C baccarat banker --seed 42 --json)
+[ "$a" = "$b" ] && ok || bad "bac seeded runs identical"
+
+n=$($C baccarat player --seed 7 --iterations 5 --quiet | wc -l)
+[ "$n" -eq 5 ] && ok || bad "bac iterations produce 5 lines (got $n)"
+
+expect_grep "bac stats table" "RESULT" \
+    $C baccarat player --seed 7 --iterations 2000 --stats
+expect_grep "bac stats json"  '"iterations":2000' \
+    $C baccarat player --seed 7 --iterations 2000 --stats --json
+
+# sanity: over many seeded rounds, win/loss/push rates should be near the
+# known Punto Banco probabilities (player ~44.6%, banker ~45.8%, tie ~9.5%)
+push=$($C baccarat player --seed 99 --iterations 50000 --stats --json |
+       sed 's/.*"push":\([0-9]*\).*/\1/')
+[ "$push" -gt 4200 ] && [ "$push" -lt 5400 ] && ok || \
+    bad "bac push rate plausible (got $push / 50000)"
+
+ln -sf casino baccarat
+expect_grep "bac symlink invocation" '"game":"baccarat"' \
+    sh -c "./baccarat banker --seed 3 --json"
+rm -f baccarat
+
 echo
 echo "passed: $pass  failed: $fail"
 [ "$fail" -eq 0 ]

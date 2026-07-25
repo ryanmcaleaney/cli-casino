@@ -8,6 +8,7 @@
 #include "game.h"
 #include "rng.h"
 
+#include "games/baccarat.h"
 #include "games/blackjack.h"
 #include "games/coin.h"
 #include "games/gdice.h"
@@ -18,7 +19,7 @@ const game_t GAMES[] = {
     { "coin",      "coin flip",               coin_run,     coin_list_bets },
     { "dice",      "generic dice (NdM)",      gdice_run,    gdice_list_bets },
     { "sicbo",     "sic bo (planned)",        NULL, NULL },
-    { "baccarat",  "baccarat (planned)",      NULL, NULL },
+    { "baccarat",  "Punto Banco baccarat",    baccarat_run, baccarat_list_bets },
     { "blackjack", "blackjack (single deck, S17)", blackjack_run,
                                                    blackjack_list_bets },
     { "craps",     "craps (planned)",         NULL, NULL },
