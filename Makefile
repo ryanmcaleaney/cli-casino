@@ -8,16 +8,20 @@ ASSET_ROOT ?= Assets
 CPPFLAGS += -DCASINO_ASSET_ROOT=\"$(ASSET_ROOT)\"
 
 SRC   := $(wildcard src/*.c) $(wildcard src/games/*.c)
+UNAME_S ?= $(shell uname -s)
 
-# Optional raylib GUI: prefer the system raylib (pkg-config), fall back to
-# a vendored copy in vendor/raylib.  Without either, the GUI is skipped
-# and the CLI builds exactly as before.
+# Prefer a system raylib discovered through pkg-config. The vendored library
+# is a Linux build, so it must never be selected on macOS.
 RAYLIB_CFLAGS := $(shell pkg-config --cflags raylib 2>/dev/null)
 RAYLIB_LIBS   := $(shell pkg-config --libs raylib 2>/dev/null)
 ifeq ($(strip $(RAYLIB_LIBS)),)
+ifeq ($(UNAME_S),Darwin)
+RAYLIB_CHECK := check-raylib
+else
 ifneq ($(wildcard vendor/raylib/lib/libraylib.a),)
 RAYLIB_CFLAGS := -Ivendor/raylib/include
 RAYLIB_LIBS   := vendor/raylib/lib/libraylib.a -lm -lpthread -ldl -lrt -lX11
+endif
 endif
 endif
 ifneq ($(strip $(RAYLIB_LIBS)),)
@@ -33,7 +37,12 @@ LINKS := roulette coin dice sicbo baccarat blackjack craps slots \
 
 all: $(BIN)
 
-$(BIN): $(OBJ)
+check-raylib:
+	@echo "error: raylib was not found on macOS." >&2
+	@echo "Install it with: brew install raylib pkg-config" >&2
+	@false
+
+$(BIN): $(RAYLIB_CHECK) $(OBJ)
 	$(CC) $(CFLAGS) -o $@ $(OBJ) $(GUI_LIBS)
 
 # Recompile if ASSET_ROOT changes (for example after install.sh builds an
@@ -58,4 +67,4 @@ test: $(BIN)
 clean:
 	rm -rf build $(BIN) $(LINKS)
 
-.PHONY: all symlinks test clean
+.PHONY: all symlinks test clean check-raylib

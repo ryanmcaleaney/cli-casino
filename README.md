@@ -18,9 +18,18 @@ test, and validate any material before relying on it.
 ## Build
 
 Requires a C11 compiler and `make`. The graphical frontends use raylib. The
-build prefers a system raylib discovered through `pkg-config`, then falls back
-to the vendored raylib library in `vendor/raylib`. If neither is available,
-the command-line games are still built.
+build prefers a system raylib discovered through `pkg-config`. On Linux it can
+fall back to the vendored raylib library in `vendor/raylib`.
+
+On macOS, install the native raylib library first. The vendored library is a
+Linux binary and is deliberately not used:
+
+```sh
+brew install raylib pkg-config
+```
+
+If raylib is missing on macOS, `make` stops with the installation command
+instead of trying to link the incompatible Linux library.
 
 ```sh
 make
@@ -39,7 +48,7 @@ To remove generated files:
 make clean
 ```
 
-## Install on Linux
+## Install on Linux and macOS
 
 The installer builds and installs the game, its command aliases, and all GUI
 assets:

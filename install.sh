@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install Casino CLI on Linux.  Run with sudo for the default prefix.
+# Install Casino on Linux or macOS. Run with sudo for the default prefix.
 set -eu
 
 PREFIX=/usr/local
