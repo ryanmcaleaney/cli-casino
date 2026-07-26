@@ -64,7 +64,7 @@ static void global_usage(FILE *f)
         "  --stats         summary statistics instead of per-round output\n"
         "  --runs N        shorthand for --iterations N --stats\n"
         "  --trainer       interactive strategy trainer (videopoker only)\n"
-        "  --gui           graphical frontend (videopoker only)\n"
+        "  --gui           graphical frontend (videopoker, baccarat)\n"
         "\n"
         "games:\n");
     for (int i = 0; i < NGAMES; i++)
@@ -135,9 +135,10 @@ int main(int argc, char **argv)
                 game->name);
         return 2;
     }
-    if (cli.gui && strcmp(game->name, "videopoker") != 0) {
-        fprintf(stderr, "%s: --gui is only available for videopoker\n",
-                game->name);
+    if (cli.gui && strcmp(game->name, "videopoker") != 0 &&
+        strcmp(game->name, "baccarat") != 0) {
+        fprintf(stderr, "%s: --gui is not available for this game "
+                        "(try videopoker or baccarat)\n", game->name);
         return 2;
     }
 

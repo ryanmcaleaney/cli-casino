@@ -600,17 +600,23 @@ expect_exit "trainer quiet mode"   2 sh -c "$C videopoker --trainer --quiet </de
 expect_exit "trainer with bets"    2 sh -c "$C videopoker --trainer hold:1 </dev/null"
 expect_exit "trainer EOF exits 0"  0 sh -c "$C videopoker --trainer --seed 1 </dev/null"
 
-# --- videopoker GUI gating (the GUI itself needs a display; not run here) --
+# --- GUI gating (the GUIs themselves need a display; not run here) --------
 expect_exit "gui other game"      2 $C roulette red --gui
 expect_exit "gui with quiet"      2 $C videopoker --gui --quiet
 expect_exit "gui with bets"       2 $C videopoker --gui hold:1
+expect_exit "bac gui with bet"    2 $C baccarat --gui player
+expect_exit "bac gui with quiet"  2 $C baccarat --gui --quiet
+expect_exit "bac gui with json"   2 $C baccarat --gui --json
+expect_exit "bac gui with runs"   2 $C baccarat --gui --runs 10
 # missing assets (or a CLI-only build) must fail cleanly, never crash
 root=$PWD
-out=$(cd /tmp && "$root/casino" videopoker --gui 2>&1)
-case "$out" in
-*"missing asset"*|*"no GUI support"*) ok ;;
-*) bad "gui fails cleanly outside repo root (got: $out)" ;;
-esac
+for g in videopoker baccarat; do
+    out=$(cd /tmp && "$root/casino" $g --gui 2>&1)
+    case "$out" in
+    *"missing asset"*|*"no GUI support"*) ok ;;
+    *) bad "$g gui fails cleanly outside repo root (got: $out)" ;;
+    esac
+done
 
 # --- ride the bus --------------------------------------------------------
 # pure rule predicates (self-test, no RNG involved)

@@ -56,8 +56,13 @@ void gui_play_click(const gui_ctx_t *g);
 
 /* ---- cards -------------------------------------------------------------- */
 
-/* Geometry for one card in a centred row of `count` cards drawn at `y`
- * with the given card height; the sprite's aspect ratio is preserved. */
+/* Geometry for one card in a row of `count` cards centred on `cx` and
+ * drawn at `y` with the given card height; aspect ratio is preserved.
+ * Games with two hands (baccarat, blackjack) place one row per side. */
+Rectangle gui_card_row(const gui_ctx_t *g, int index, int count,
+                       float height, float cx, float y, float gap);
+
+/* The same row centred on the canvas. */
 Rectangle gui_card_rect(const gui_ctx_t *g, int index, int count,
                         float height, float y, float gap);
 

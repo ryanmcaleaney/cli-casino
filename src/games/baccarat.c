@@ -7,11 +7,12 @@
 #include "cards.h"
 #include "output.h"
 
-/* Punto Banco: no player decisions, the draw rules are fully mechanical. */
-#define BAC_MAX_CARDS 3
+#ifdef CASINO_GUI
+#include "gui/baccarat_gui.h"
+#endif
 
-typedef enum { BAC_PLAYER, BAC_BANKER, BAC_TIE } bac_side_t;
-typedef enum { BAC_WIN, BAC_LOSS, BAC_PUSH } bac_result_t;
+/* BAC_MAX_CARDS, bac_side_t and bac_result_t live in baccarat.h so the
+ * frontend interface at the end of this file can speak them. */
 
 static const char *const SIDE_WORD[]   = { "PLAYER", "BANKER", "TIE" };
 static const char *const SIDE_JSON[]   = { "player", "banker", "tie" };
@@ -134,8 +135,69 @@ static void play_round(rng_t *rng, bac_hand_t *player, bac_hand_t *banker,
         *outcome = BAC_TIE;
 }
 
+/* ---- frontend interface (see baccarat.h) ------------------------------- */
+
+void bac_front_round(rng_t *rng, bac_round_t *out)
+{
+    bac_hand_t player, banker;
+    bac_side_t outcome;
+
+    play_round(rng, &player, &banker, &outcome);
+
+    out->nplayer = player.n;
+    for (int i = 0; i < player.n; i++)
+        out->player[i] = player.cards[i];
+    out->nbanker = banker.n;
+    for (int i = 0; i < banker.n; i++)
+        out->banker[i] = banker.cards[i];
+    out->outcome = outcome;
+}
+
+int bac_front_total(const card_t *cards, int n)
+{
+    bac_hand_t h = { .n = 0 };
+
+    for (int i = 0; i < n && i < BAC_MAX_CARDS; i++)
+        h.cards[h.n++] = cards[i];
+    return hand_total(&h);
+}
+
+bac_result_t bac_front_result(bac_side_t outcome, bac_side_t bet)
+{
+    return outcome == bet      ? BAC_WIN
+         : outcome == BAC_TIE  ? BAC_PUSH
+                               : BAC_LOSS;
+}
+
+const char *bac_front_side_word(bac_side_t side)
+{
+    return SIDE_WORD[side];
+}
+
+const char *bac_front_result_word(bac_result_t result)
+{
+    return RESULT_WORD[result];
+}
+
 int baccarat_run(const cli_t *cli, rng_t *rng)
 {
+    if (cli->gui) {
+        /* the GUI picks the bet per round, so it takes no bet argument */
+        if (cli->nbets != 0 || cli->quiet || cli->json || cli->stats ||
+            cli->iterations != 1) {
+            fprintf(stderr, "baccarat: --gui takes no other arguments "
+                            "(only --seed)\n");
+            return 2;
+        }
+#ifdef CASINO_GUI
+        return bac_gui_run(rng);
+#else
+        fprintf(stderr, "baccarat: this build has no GUI support "
+                        "(install raylib and run make again)\n");
+        return 2;
+#endif
+    }
+
     if (cli->nbets != 1) {
         fprintf(stderr, "baccarat: choose exactly one bet: "
                         "player, banker, or tie\n");
@@ -170,9 +232,7 @@ int baccarat_run(const cli_t *cli, rng_t *rng)
 
         play_round(rng, &player, &banker, &outcome);
 
-        bac_result_t r = outcome == bet    ? BAC_WIN
-                        : outcome == BAC_TIE ? BAC_PUSH
-                                              : BAC_LOSS;
+        bac_result_t r = bac_front_result(outcome, bet);
         counts[r]++;
         outcomes[outcome]++;
 

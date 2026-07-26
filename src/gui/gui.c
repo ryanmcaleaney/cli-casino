@@ -57,15 +57,22 @@ bool gui_button(const gui_ctx_t *g, Rectangle r, const char *label,
 
 /* ---- cards -------------------------------------------------------------- */
 
-Rectangle gui_card_rect(const gui_ctx_t *g, int index, int count,
-                        float height, float y, float gap)
+Rectangle gui_card_row(const gui_ctx_t *g, int index, int count,
+                       float height, float cx, float y, float gap)
 {
     float scale = height / (float)g->as->back.height;
     float w = (float)g->as->back.width * scale;
     float total = count * w + (count - 1) * gap;
-    float x0 = (GUI_CANVAS_W - total) / 2;
+    float x0 = cx - total / 2;
 
     return (Rectangle){ x0 + index * (w + gap), y, w, height };
+}
+
+Rectangle gui_card_rect(const gui_ctx_t *g, int index, int count,
+                        float height, float y, float gap)
+{
+    return gui_card_row(g, index, count, height, GUI_CANVAS_W / 2.0f, y,
+                        gap);
 }
 
 void gui_draw_card(const gui_ctx_t *g, Rectangle r, const card_t *card)
