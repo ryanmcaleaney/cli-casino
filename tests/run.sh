@@ -600,6 +600,159 @@ expect_exit "trainer quiet mode"   2 sh -c "$C videopoker --trainer --quiet </de
 expect_exit "trainer with bets"    2 sh -c "$C videopoker --trainer hold:1 </dev/null"
 expect_exit "trainer EOF exits 0"  0 sh -c "$C videopoker --trainer --seed 1 </dev/null"
 
+# --- videopoker GUI gating (the GUI itself needs a display; not run here) --
+expect_exit "gui other game"      2 $C roulette red --gui
+expect_exit "gui with quiet"      2 $C videopoker --gui --quiet
+expect_exit "gui with bets"       2 $C videopoker --gui hold:1
+# missing assets (or a CLI-only build) must fail cleanly, never crash
+root=$PWD
+out=$(cd /tmp && "$root/casino" videopoker --gui 2>&1)
+case "$out" in
+*"missing asset"*|*"no GUI support"*) ok ;;
+*) bad "gui fails cleanly outside repo root (got: $out)" ;;
+esac
+
+# --- ride the bus --------------------------------------------------------
+# pure rule predicates (self-test, no RNG involved)
+expect_exit "rtb rule self-test passes" 0 $C ridethebus check
+expect_grep "rtb check no failures" "check: 18 passed, 0 failed" \
+    $C ridethebus check
+expect_grep "rtb red heart"    "^red heart  *red "      $C ridethebus check
+expect_grep "rtb red diamond"  "^red diamond  *red "    $C ridethebus check
+expect_grep "rtb black club"   "^red club  *black "     $C ridethebus check
+expect_grep "rtb black spade"  "^red spade  *black "    $C ridethebus check
+expect_grep "rtb cmp 7vJ"      "^cmp 7vJ  *higher "     $C ridethebus check
+expect_grep "rtb cmp Jv7"      "^cmp Jv7  *lower "      $C ridethebus check
+expect_grep "rtb cmp 7v7"      "^cmp 7v7  *equal "      $C ridethebus check
+expect_grep "rtb cmp KvA"      "^cmp KvA  *higher "     $C ridethebus check
+expect_grep "rtb inside 7,J,9" "^inside 7,J,9  *inside " $C ridethebus check
+expect_grep "rtb 7,J,K not inside" "^inside 7,J,K  *outside " \
+    $C ridethebus check
+expect_grep "rtb 7,J,7 boundary" "^inside 7,J,7  *boundary " \
+    $C ridethebus check
+expect_grep "rtb outside 7,J,4" "^outside 7,J,4  *outside " \
+    $C ridethebus check
+expect_grep "rtb 7,J,J boundary" "^outside 7,J,J  *boundary " \
+    $C ridethebus check
+expect_grep "rtb suit match"   "^suit s+s  *match "     $C ridethebus check
+expect_grep "rtb suit nomatch" "^suit s+h  *nomatch "   $C ridethebus check
+
+# scripted play, deterministic via --seed
+expect_exit "rtb scripted game"    0 $C ridethebus r,r,h,r,o,r,s --seed 17
+expect_exit "rtb space separated"  0 $C ridethebus r r h r o r s --seed 17
+# full words: space-separated, since one comma-joined token is capped at
+# 31 chars by the shared bet-name field
+expect_exit "rtb full words"       0 \
+    $C ridethebus red ride higher ride outside ride spades --seed 17
+expect_exit "rtb mixed words/letters" 0 \
+    $C ridethebus red,ride higher,r outside r spades --seed 17
+expect_grep "rtb rides the bus" "^BUS rounds=4 bet=100 payout=2000 net=+1900$" \
+    $C ridethebus r,r,h,r,o,r,s --seed 17 --quiet
+expect_grep "rtb full words same result" "^BUS rounds=4 " \
+    $C ridethebus red ride higher ride outside ride spades --seed 17 --quiet
+expect_grep "rtb case insensitive" "^BUS rounds=4 " \
+    $C ridethebus R,RIDE,H,Ride,OUTSIDE,r,S --seed 17 --quiet
+expect_grep "rtb loses round 1" "^LOSS rounds=0 bet=100 payout=0 net=-100$" \
+    $C ridethebus r,r,h,r,o,r,s --seed 7 --quiet
+# script ending at a ride prompt cashes out; ending at a guess is an error
+expect_grep "rtb short script cashes" "^CASHOUT rounds=1 bet=100 payout=200" \
+    $C ridethebus r --seed 17 --quiet
+expect_exit "rtb script ends at guess" 2 $C ridethebus r,r --seed 17
+
+# payouts scale from the ORIGINAL wager (2x/3x/4x/20x)
+expect_grep "rtb bet size honoured" "^BUS rounds=4 bet=250 payout=5000 net=+4750$" \
+    $C ridethebus bet:250 r,r,h,r,o,r,s --seed 17 --quiet
+expect_grep "rtb round1 cashout 2x" "^CASHOUT rounds=1 bet=100 payout=200" \
+    $C ridethebus r,c --seed 17 --quiet
+expect_grep "rtb round2 cashout 3x" "^CASHOUT rounds=2 bet=100 payout=300" \
+    $C ridethebus r,r,h,c --seed 17 --quiet
+expect_grep "rtb round3 cashout 4x" "^CASHOUT rounds=3 bet=100 payout=400" \
+    $C ridethebus r,r,h,r,o,c --seed 17 --quiet
+
+# tie / boundary pushes: re-drawn from the same deck, never a loss
+# seed 25 deals 10d then 10h (equal rank -> push), then 7h
+expect_grep "rtb round2 tie pushes" \
+    '"cards":\["10d","10h","7h"\],"pushes":\[2\]' \
+    $C ridethebus r,r,h,r,o,r,s --seed 25 --json
+# seed 102 deals 2c 9s then 2d (equals the low boundary -> push), then 6s
+expect_grep "rtb round3 boundary pushes" \
+    '"cards":\["2c","9s","2d","6s","5c"\],"pushes":\[3\]' \
+    $C ridethebus b,r,h,r,i,r,h --seed 102 --json
+expect_grep "rtb push still wins the round" '"rounds_won":3' \
+    $C ridethebus b,r,h,r,i,r,h --seed 102 --json
+
+# output modes
+expect_grep "rtb json game key" '"game":"ridethebus"' \
+    $C ridethebus r,r,h,r,o,r,s --seed 17 --json
+expect_grep "rtb json result"   '"result":"bus","payout":2000,"net":1900' \
+    $C ridethebus r,r,h,r,o,r,s --seed 17 --json
+expect_grep "rtb transcript"    "YOU RODE THE BUS" \
+    $C ridethebus r,r,h,r,o,r,s --seed 17
+expect_grep "rtb art cards"     "┌─────────┐ ┌─────────┐" \
+    env CASINO_CARDS=art $C ridethebus r,r,h,r,o,r,s --seed 17
+expect_grep "rtb help works"    "usage:"   $C ridethebus --help
+expect_grep "rtb list-bets"     "RIDE THE BUS\|ride the bus" \
+    $C ridethebus --list-bets
+expect_grep "rtb in game list"  "ridethebus" $C --help
+
+a=$($C ridethebus r,r,h,r,o,r,s --seed 42 --json)
+b=$($C ridethebus r,r,h,r,o,r,s --seed 42 --json)
+[ "$a" = "$b" ] && ok || bad "rtb seeded runs identical"
+
+# interactive: piped choices are consumed, EOF ends cleanly
+expect_grep "rtb interactive cashout" "CASHED OUT after round 2" \
+    sh -c "printf 'red\nride\nhigher\ncash\n' | $C ridethebus --seed 17"
+expect_grep "rtb reprompts on bad input" "invalid choice" \
+    sh -c "printf 'zzz\nred\ncash\n' | $C ridethebus --seed 17"
+expect_exit "rtb interactive EOF"  0 sh -c "$C ridethebus --seed 17 </dev/null"
+
+# validation
+expect_exit "rtb bet zero"        2 $C ridethebus bet:0
+expect_exit "rtb bet negative"    2 $C ridethebus bet:-5
+expect_exit "rtb bet malformed"   2 $C ridethebus bet:x
+expect_exit "rtb cashout range"   2 $C ridethebus cashout:9
+expect_exit "rtb unknown action"  2 $C ridethebus banana
+expect_exit "rtb bad action word" 2 $C ridethebus z,r,h
+expect_exit "rtb check is alone"  2 $C ridethebus check bet:100
+
+# simulation: no prompting, random valid guesses, aggregate only
+n=$($C ridethebus --runs 200 --seed 3 --quiet </dev/null | wc -l)
+[ "$n" -eq 1 ] && ok || bad "rtb runs quiet is one line (got $n)"
+expect_grep "rtb runs table" "inside/outside" $C ridethebus --runs 500 --seed 3
+expect_grep "rtb runs json"  '"iterations":500' \
+    $C ridethebus --runs 500 --seed 3 --json
+# counters must chain: round N+1 is reached exactly as often as N was won
+$C ridethebus --runs 20000 --seed 3 --quiet | awk '
+{
+  for (i = 1; i <= NF; i++) {
+    if ($i ~ /^r[1-4]=/) { split($i, a, /[=\/]/); won[a[1]] = a[2]; rch[a[1]] = a[3] }
+    if ($i ~ /^completed=/) { split($i, c, "="); comp = c[2] }
+  }
+}
+END {
+  ok = (rch["r2"] == won["r1"]) && (rch["r3"] == won["r2"]) &&
+       (rch["r4"] == won["r3"]) && (comp == won["r4"]) && (rch["r1"] == 20000)
+  print (ok ? "CHAIN_OK" : "CHAIN_BAD")
+}' | grep -q CHAIN_OK && ok || bad "rtb round counters chain correctly"
+
+# sanity: random guesses complete all four rounds ~3.125% of the time
+comp=$($C ridethebus --runs 200000 --seed 3 --json |
+       sed 's/.*"completed":\([0-9]*\).*/\1/')
+[ "$comp" -gt 5700 ] && [ "$comp" -lt 6900 ] && ok || \
+    bad "rtb completion rate plausible (got $comp / 200000)"
+# cashing out after round 1 pays 2x on a 50% shot: exactly break even
+ret=$($C ridethebus cashout:1 --runs 200000 --seed 3 --json |
+      sed 's/.*"return_per_unit":\([0-9.]*\).*/\1/')
+case "$ret" in
+0.9[89]*|1.0*) ok ;;
+*) bad "rtb cashout:1 is break-even (got $ret)" ;;
+esac
+
+ln -sf casino ridethebus
+expect_grep "rtb symlink invocation" '"game":"ridethebus"' \
+    sh -c "./ridethebus r,r,h,r,o,r,s --seed 17 --json"
+rm -f ridethebus
+
 echo
 echo "passed: $pass  failed: $fail"
 [ "$fail" -eq 0 ]

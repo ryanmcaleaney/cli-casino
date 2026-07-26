@@ -1,0 +1,19 @@
+# Build products
+build/
+casino
+ridethebus
+
+# Symlinks created by `make symlinks`
+roulette
+coin
+dice
+sicbo
+baccarat
+blackjack
+craps
+slots
+videopoker
+war
+threecard
+chuckaluck
+bigsix

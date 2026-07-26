@@ -14,6 +14,10 @@
 #include "poker.h"
 #include "vpsolve.h"
 
+#ifdef CASINO_GUI
+#include "gui/gui.h"
+#endif
+
 /* Jacks or Better pay ladder, ordered low to high. */
 typedef enum {
     VP_HIGH_CARD, VP_LOW_PAIR, VP_JACKS_OR_BETTER, VP_TWO_PAIR,
@@ -71,6 +75,31 @@ static const char *hand_desc(const poker_eval_t *ev, char *buf, size_t len)
         return buf;
     }
     return poker_cat_str(ev->cat);
+}
+
+/* --- frontend interface (see videopoker.h) ----------------------------- */
+
+int vp_front_category(const card_t hand[5])
+{
+    return (int)vp_classify(hand, NULL);
+}
+
+int vp_front_payout(int cat)
+{
+    return (cat >= 0 && cat < VP_NCATS) ? VP_PAYOUT[cat] : 0;
+}
+
+const char *vp_front_token(int cat)
+{
+    return (cat >= 0 && cat < VP_NCATS) ? VP_TOKEN[cat] : "?";
+}
+
+void vp_front_describe(const card_t hand[5], char *buf, size_t len)
+{
+    poker_eval_t ev;
+    char tmp[32];
+    vp_classify(hand, &ev);
+    snprintf(buf, len, "%s", hand_desc(&ev, tmp, sizeof tmp));
 }
 
 /* --- hold parsing (kept separate from evaluation) --------------------- */
@@ -385,6 +414,22 @@ int videopoker_run(const cli_t *cli, rng_t *rng)
     bool scripted = false, fixed_deal = false, solve_mode = false;
     bool held[5] = { false };
     card_t fixed[5];
+
+    if (cli->gui) {
+        if (cli->nbets != 0 || cli->quiet || cli->json || cli->stats ||
+            cli->trainer || cli->iterations != 1) {
+            fprintf(stderr, "videopoker: --gui takes no other arguments "
+                            "(only --seed)\n");
+            return 2;
+        }
+#ifdef CASINO_GUI
+        return vp_gui_run(rng);
+#else
+        fprintf(stderr, "videopoker: this build has no GUI support "
+                        "(install raylib and run make again)\n");
+        return 2;
+#endif
+    }
 
     if (cli->trainer) {
         if (cli->nbets != 0 || cli->quiet || cli->json || cli->stats ||
