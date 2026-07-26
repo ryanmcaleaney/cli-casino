@@ -25,9 +25,6 @@ static const char *const ROUND_SHORT[RTB_ROUNDS] = {
     "red/black", "higher/lower", "inside/outside", "suit"
 };
 
-/* Every card revealed in one game: 1 + (<=4) + (<=7) + 1 with pushes. */
-#define RTB_MAX_CARDS 24
-
 typedef enum {
     RTB_RED_BLACK, RTB_HIGH_LOW, RTB_INSIDE_OUTSIDE, RTB_SUIT, RTB_COMPLETE
 } rtb_stage_t;
@@ -55,27 +52,26 @@ static int rtb_compare_rank(card_t a, card_t b)
     return (va > vb) - (va < vb);
 }
 
-/* c sits exactly on one of the two boundary ranks: the draw is a push. */
-static bool rtb_is_boundary(card_t a, card_t b, card_t c)
+/* Round 2: an equal rank counts as HIGHER, so "higher" takes the tie and
+ * "lower" loses it.  Every draw resolves the round; nothing is re-drawn. */
+static bool rtb_higher_wins(card_t first, card_t next)
 {
-    int v = rtb_rank_value(c);
-    return v == rtb_rank_value(a) || v == rtb_rank_value(b);
+    return rtb_compare_rank(first, next) <= 0;
 }
 
+/* Round 3: the two boundary ranks count as INSIDE, so "inside" takes them
+ * and "outside" loses them.  Inside and outside are exact complements. */
 static bool rtb_is_inside(card_t a, card_t b, card_t c)
 {
     int va = rtb_rank_value(a), vb = rtb_rank_value(b);
     int lo = va < vb ? va : vb, hi = va < vb ? vb : va;
     int v = rtb_rank_value(c);
-    return v > lo && v < hi;
+    return v >= lo && v <= hi;
 }
 
 static bool rtb_is_outside(card_t a, card_t b, card_t c)
 {
-    int va = rtb_rank_value(a), vb = rtb_rank_value(b);
-    int lo = va < vb ? va : vb, hi = va < vb ? vb : va;
-    int v = rtb_rank_value(c);
-    return v < lo || v > hi;
+    return !rtb_is_inside(a, b, c);
 }
 
 static bool rtb_suit_matches(card_t c, int suit)
@@ -104,9 +100,11 @@ static const rtb_opt_t OPT_SUIT[] = {
     { "h", 2 }, { "heart", 2 },   { "hearts", 2 },
     { "s", 3 }, { "spade", 3 },   { "spades", 3 }
 };
-static const rtb_opt_t OPT_RIDE[] = {
-    { "c", 0 }, { "cash", 0 }, { "cashout", 0 },
-    { "r", 1 }, { "ride", 1 }
+/* Cash out shares the prompt with the next round's options from round 2
+ * onwards.  'x' avoids colliding with [C] Clubs in round 4. */
+#define RTB_CASH (-1)
+static const rtb_opt_t OPT_CASH[] = {
+    { "x", RTB_CASH }, { "cash", RTB_CASH }, { "cashout", RTB_CASH }
 };
 
 #define NOPT(a) ((int)(sizeof (a) / sizeof (a)[0]))
@@ -200,15 +198,31 @@ typedef struct {
     int           cashout_after;   /* random mode: ride until this round */
 } rtb_agent_t;
 
-/* Ask for one choice.  Returns 0, or -1 when the player walks away (EOF)
- * or the script is exhausted, or 2 on a hard error. */
+/* Look the word up among this round's guesses, then among the cash-out
+ * words when cashing out is offered. */
+static int choice_lookup(const rtb_opt_t *opts, int nopts, bool allow_cash,
+                         const char *w, int *out)
+{
+    if (opt_lookup(opts, nopts, w, out) == 0)
+        return 0;
+    if (allow_cash && opt_lookup(OPT_CASH, NOPT(OPT_CASH), w, out) == 0)
+        return 0;
+    return -1;
+}
+
+/*
+ * Ask for one choice: either a guess for `round`, or RTB_CASH when the
+ * player is allowed to (and wants to) stop.  Picking a guess is itself
+ * the decision to keep playing.  Returns 0, -1 when the player walks
+ * away (EOF), or 2 on a hard error.
+ */
 static int agent_choose(rtb_agent_t *ag, const rtb_opt_t *opts, int nopts,
-                        bool is_ride, int round, int *out)
+                        bool allow_cash, int round, int *out)
 {
     if (ag->mode == AG_RANDOM) {
-        /* `round` is the 0-based round just won, so rounds_won == round+1 */
-        if (is_ride)
-            *out = (round + 1 < ag->cashout_after);
+        /* `round` rounds have been won by the time this is asked */
+        if (allow_cash && round >= ag->cashout_after)
+            *out = RTB_CASH;
         else if (opts == OPT_SUIT)
             *out = (int)rng_below(ag->rng, 4);
         else
@@ -218,9 +232,9 @@ static int agent_choose(rtb_agent_t *ag, const rtb_opt_t *opts, int nopts,
 
     if (ag->mode == AG_SCRIPT) {
         if (ag->sc->pos >= ag->sc->n) {
-            /* Out of actions: stop at a ride prompt, complain otherwise. */
-            if (is_ride) {
-                *out = 0;
+            /* Out of actions: take the money if that is legal here. */
+            if (allow_cash) {
+                *out = RTB_CASH;
                 if (ag->display)
                     fprintf(ag->disp, "> cash out (script ended)\n");
                 return 0;
@@ -230,10 +244,9 @@ static int agent_choose(rtb_agent_t *ag, const rtb_opt_t *opts, int nopts,
             return 2;
         }
         const char *w = ag->sc->words[ag->sc->pos++];
-        if (opt_lookup(opts, nopts, w, out) < 0) {
-            fprintf(stderr, "ridethebus: '%s' is not valid here (%s)\n", w,
-                    is_ride ? "expected cash/ride"
-                            : "expected a guess for this round");
+        if (choice_lookup(opts, nopts, allow_cash, w, out) < 0) {
+            fprintf(stderr, "ridethebus: '%s' is not valid in round %d\n",
+                    w, round + 1);
             return 2;
         }
         if (ag->display)
@@ -252,7 +265,7 @@ static int agent_choose(rtb_agent_t *ag, const rtb_opt_t *opts, int nopts,
         }
         line[strcspn(line, "\r\n")] = '\0';
         if (normalise(line, norm, sizeof norm) == 0 &&
-            opt_lookup(opts, nopts, norm, out) == 0)
+            choice_lookup(opts, nopts, allow_cash, norm, out) == 0)
             return 0;
         fprintf(ag->disp, "invalid choice, try again\n");
     }
@@ -260,17 +273,17 @@ static int agent_choose(rtb_agent_t *ag, const rtb_opt_t *opts, int nopts,
 
 /* ---- game state -------------------------------------------------------- */
 
+/* Every round resolves on the card it deals, so there is exactly one
+ * card per round played. */
 typedef struct {
     long          bet;
     long          payout;
     int           rounds_won;
     rtb_outcome_t outcome;
     bool          walked;               /* EOF before finishing */
-    card_t        key[RTB_ROUNDS];      /* the deciding card of each round */
-    int           guess[RTB_ROUNDS];
-    card_t        all[RTB_MAX_CARDS];   /* every card revealed, in order */
-    bool          push[RTB_MAX_CARDS];
+    card_t        cards[RTB_ROUNDS];    /* one card per round played */
     int           ncards;
+    int           guess[RTB_ROUNDS];
 } rtb_game_t;
 
 /* ---- display (reuses cardart; no card art is defined here) ------------- */
@@ -296,20 +309,36 @@ static void print_prompt(FILE *f, rtb_stage_t st, const rtb_game_t *g)
 
     fprintf(f, "\nROUND %d - %s\n\n", (int)st + 1, ROUND_TITLE[st]);
     switch (st) {
+    case RTB_HIGH_LOW:
+        card_name(g->cards[0], a, sizeof a);
+        fprintf(f, "Current card: %s\n\n", a);
+        break;
+    case RTB_INSIDE_OUTSIDE: {
+        bool first_low = rtb_compare_rank(g->cards[0], g->cards[1]) < 0;
+        card_name(first_low ? g->cards[0] : g->cards[1], a, sizeof a);
+        card_name(first_low ? g->cards[1] : g->cards[0], b, sizeof b);
+        fprintf(f, "Range: %s - %s\n\n", a, b);
+        break;
+    }
+    default:
+        break;
+    }
+
+    /* From round 2 on, cashing out shares the prompt: choosing any of the
+     * round's own options is what keeps the game going. */
+    if (st != RTB_RED_BLACK)
+        fprintf(f, "[X] Cash out\n");
+
+    switch (st) {
     case RTB_RED_BLACK:
         fprintf(f, "[R] Red\n[B] Black\n\n");
         break;
     case RTB_HIGH_LOW:
-        card_name(g->key[0], a, sizeof a);
-        fprintf(f, "Current card: %s\n\n[H] Higher\n[L] Lower\n\n", a);
+        fprintf(f, "[H] Higher\n[L] Lower\n\n");
         break;
-    case RTB_INSIDE_OUTSIDE: {
-        bool first_low = rtb_compare_rank(g->key[0], g->key[1]) < 0;
-        card_name(first_low ? g->key[0] : g->key[1], a, sizeof a);
-        card_name(first_low ? g->key[1] : g->key[0], b, sizeof b);
-        fprintf(f, "Range: %s - %s\n\n[I] Inside\n[O] Outside\n\n", a, b);
+    case RTB_INSIDE_OUTSIDE:
+        fprintf(f, "[I] Inside\n[O] Outside\n\n");
         break;
-    }
     default:
         fprintf(f, "[H] Hearts\n[D] Diamonds\n[C] Clubs\n[S] Spades\n\n");
         break;
@@ -317,17 +346,6 @@ static void print_prompt(FILE *f, rtb_stage_t st, const rtb_game_t *g)
 }
 
 /* ---- one game ---------------------------------------------------------- */
-
-static card_t take_card(shoe_t *shoe, rtb_game_t *g, bool push)
-{
-    card_t c = shoe_draw(shoe);
-    if (g->ncards < RTB_MAX_CARDS) {
-        g->all[g->ncards] = c;
-        g->push[g->ncards] = push;
-        g->ncards++;
-    }
-    return c;
-}
 
 /*
  * Play one complete game.  Interactive, scripted and simulated play all
@@ -351,64 +369,52 @@ static int play_game(rtb_agent_t *ag, rng_t *rng, long bet, rtb_game_t *g)
         rtb_stage_t st = (rtb_stage_t)round;
         int nopts, guess, rc;
         const rtb_opt_t *opts = stage_opts(st, &nopts);
+        bool allow_cash = round > 0;    /* nothing to cash before round 1 */
 
         if (show)
             print_prompt(f, st, g);
-        rc = agent_choose(ag, opts, nopts, false, round, &guess);
+        rc = agent_choose(ag, opts, nopts, allow_cash, round, &guess);
         if (rc == 2)
             return 2;
         if (rc < 0) {
+            /* EOF: take the money if any has been won, else no bet. */
             g->walked = true;
+            if (allow_cash)
+                g->outcome = RTB_CASHOUT;
+            return 0;
+        }
+        if (guess == RTB_CASH) {
+            g->outcome = RTB_CASHOUT;
             return 0;
         }
         g->guess[round] = guess;
 
-        /* Draw until the round actually resolves; ties (round 2) and
-         * boundary cards (round 3) push and are re-drawn from the same
-         * deck.  Pushed cards stay consumed. */
-        card_t c;
+        /* One card, one resolution: ties go to HIGHER and boundaries go
+         * to INSIDE, so no draw is ever repeated. */
+        card_t c = shoe_draw(&shoe);
         bool correct;
-        for (;;) {
-            bool pushed = false;
-            c = take_card(&shoe, g, false);
 
-            if (st == RTB_HIGH_LOW) {
-                int cmp = rtb_compare_rank(g->key[0], c);
-                if (cmp == 0)
-                    pushed = true;
-                else
-                    correct = guess == 0 ? cmp < 0 : cmp > 0;
-            } else if (st == RTB_INSIDE_OUTSIDE) {
-                if (rtb_is_boundary(g->key[0], g->key[1], c))
-                    pushed = true;
-                else
-                    correct = guess == 0
-                                  ? rtb_is_inside(g->key[0], g->key[1], c)
-                                  : rtb_is_outside(g->key[0], g->key[1], c);
-            } else if (st == RTB_RED_BLACK) {
-                correct = (guess == 0) == rtb_is_red(c);
-            } else {
-                correct = rtb_suit_matches(c, guess);
-            }
-
-            if (!pushed)
-                break;
-
-            g->push[g->ncards - 1] = true;
-            if (show) {
-                char buf[8];
-                card_name(c, buf, sizeof buf);
-                fprintf(f, "\n");
-                show_cards(f, &c, 1);
-                fprintf(f, "\n%s is equal - PUSH, drawing another card\n",
-                        buf);
-            }
+        g->cards[g->ncards++] = c;
+        switch (st) {
+        case RTB_HIGH_LOW:
+            correct = rtb_higher_wins(g->cards[0], c) == (guess == 0);
+            break;
+        case RTB_INSIDE_OUTSIDE:
+            correct = guess == 0
+                          ? rtb_is_inside(g->cards[0], g->cards[1], c)
+                          : rtb_is_outside(g->cards[0], g->cards[1], c);
+            break;
+        case RTB_SUIT:
+            correct = rtb_suit_matches(c, guess);
+            break;
+        default:
+            correct = (guess == 0) == rtb_is_red(c);
+            break;
         }
 
-        g->key[round] = c;
         if (show) {
             fprintf(f, "\n");
-            show_cards(f, g->key, round + 1);
+            show_cards(f, g->cards, g->ncards);
         }
 
         if (!correct) {
@@ -423,31 +429,9 @@ static int play_game(rtb_agent_t *ag, rng_t *rng, long bet, rtb_game_t *g)
         g->payout = bet * RTB_MULT[round];
         if (show)
             fprintf(f, "\nCorrect!\n\nCurrent payout: %ld\n", g->payout);
-
-        if (round == RTB_ROUNDS - 1)
-            break;
-
-        if (show)
-            fprintf(f, "\n[C] Cash out\n[R] Ride\n\n");
-        bool ride;
-        int choice;
-        rc = agent_choose(ag, OPT_RIDE, NOPT(OPT_RIDE), true, round,
-                          &choice);
-        if (rc == 2)
-            return 2;
-        if (rc < 0) {
-            g->outcome = RTB_CASHOUT;   /* EOF: take the money */
-            g->walked = true;
-            return 0;
-        }
-        ride = choice == 1;
-        if (!ride) {
-            g->outcome = RTB_CASHOUT;
-            return 0;
-        }
     }
 
-    g->outcome = g->rounds_won == RTB_ROUNDS ? RTB_BUS : RTB_CASHOUT;
+    g->outcome = RTB_BUS;
     return 0;
 }
 
@@ -483,21 +467,17 @@ static void result_json(FILE *f, const rtb_game_t *g)
 {
     char buf[8];
 
+    /* one card and one guess per round played */
     fprintf(f, "{\"game\":\"ridethebus\",\"bet\":%ld,\"rounds_won\":%d,"
                "\"cards\":[", g->bet, g->rounds_won);
     for (int i = 0; i < g->ncards; i++) {
         if (i)
             fputc(',', f);
-        card_name(g->all[i], buf, sizeof buf);
+        card_name(g->cards[i], buf, sizeof buf);
         json_string(f, buf);
     }
-    fprintf(f, "],\"pushes\":[");
-    for (int i = 0, n = 0; i < g->ncards; i++)
-        if (g->push[i])
-            fprintf(f, "%s%d", n++ ? "," : "", i + 1);
     fprintf(f, "],\"guesses\":[");
-    for (int i = 0; i < g->rounds_won + (g->outcome == RTB_LOSS ? 1 : 0) &&
-                    i < RTB_ROUNDS; i++) {
+    for (int i = 0; i < g->ncards; i++) {
         if (i)
             fputc(',', f);
         json_string(f, guess_word((rtb_stage_t)i, g->guess[i]));
@@ -538,13 +518,17 @@ static const char *cmp_word(card_t a, card_t b)
     return c < 0 ? "higher" : c > 0 ? "lower" : "equal";
 }
 
-static const char *io_word(card_t a, card_t b, card_t c)
+/* Round 2 as the player sees it: guess 0 = higher, 1 = lower. */
+static const char *hilo_word(card_t first, card_t next, int guess)
 {
-    if (rtb_is_boundary(a, b, c))
-        return "boundary";
-    if (rtb_is_inside(a, b, c))
-        return "inside";
-    return "outside";
+    return rtb_higher_wins(first, next) == (guess == 0) ? "win" : "loss";
+}
+
+/* Round 3 as the player sees it: guess 0 = inside, 1 = outside. */
+static const char *inout_word(card_t a, card_t b, card_t c, int guess)
+{
+    bool won = guess == 0 ? rtb_is_inside(a, b, c) : rtb_is_outside(a, b, c);
+    return won ? "win" : "loss";
 }
 
 static int run_check(void)
@@ -563,7 +547,7 @@ static int run_check(void)
     check_case(&pass, &failed, "red spade",
                rtb_is_red(mk(5, SPADE)) ? "red" : "black", "black");
 
-    /* second card relative to the first */
+    /* rank order: second card relative to the first, ace above king */
     check_case(&pass, &failed, "cmp 7vJ", cmp_word(c7, cJ), "higher");
     check_case(&pass, &failed, "cmp Jv7", cmp_word(cJ, c7), "lower");
     check_case(&pass, &failed, "cmp 7v7",
@@ -572,22 +556,45 @@ static int run_check(void)
                cmp_word(mk(13, CLUB), mk(1, SPADE)), "higher");
     check_case(&pass, &failed, "cmp AvK",
                cmp_word(mk(1, SPADE), mk(13, CLUB)), "lower");
+    check_case(&pass, &failed, "cmp AvQ",
+               cmp_word(mk(1, SPADE), mk(12, CLUB)), "lower");
 
-    check_case(&pass, &failed, "inside 7,J,9",
-               io_word(c7, cJ, mk(9, SPADE)), "inside");
-    check_case(&pass, &failed, "inside 7,J,K",
-               io_word(c7, cJ, mk(13, SPADE)), "outside");
-    check_case(&pass, &failed, "inside 7,J,7",
-               io_word(c7, cJ, mk(7, SPADE)), "boundary");
-    check_case(&pass, &failed, "outside 7,J,4",
-               io_word(c7, cJ, mk(4, SPADE)), "outside");
-    check_case(&pass, &failed, "outside 7,J,J",
-               io_word(c7, cJ, mk(11, SPADE)), "boundary");
-    check_case(&pass, &failed, "outside 7,J,9",
-               io_word(c7, cJ, mk(9, DIAM)), "inside");
-    /* ace is high, so it sits outside a 7-J range */
-    check_case(&pass, &failed, "inside 7,J,A",
-               io_word(c7, cJ, mk(1, SPADE)), "outside");
+    /* round 2: an equal rank counts as HIGHER */
+    check_case(&pass, &failed, "hilo 7 higher 7",
+               hilo_word(c7, mk(7, SPADE), 0), "win");
+    check_case(&pass, &failed, "hilo 7 lower 7",
+               hilo_word(c7, mk(7, SPADE), 1), "loss");
+    check_case(&pass, &failed, "hilo 7 higher J",
+               hilo_word(c7, cJ, 0), "win");
+    check_case(&pass, &failed, "hilo 7 lower J",
+               hilo_word(c7, cJ, 1), "loss");
+    check_case(&pass, &failed, "hilo 7 higher 4",
+               hilo_word(c7, mk(4, SPADE), 0), "loss");
+    check_case(&pass, &failed, "hilo 7 lower 4",
+               hilo_word(c7, mk(4, SPADE), 1), "win");
+    check_case(&pass, &failed, "hilo K higher A",
+               hilo_word(mk(13, CLUB), mk(1, SPADE), 0), "win");
+
+    /* round 3: the boundary ranks count as INSIDE */
+    check_case(&pass, &failed, "inout 7J inside 9",
+               inout_word(c7, cJ, mk(9, SPADE), 0), "win");
+    check_case(&pass, &failed, "inout 7J inside 7",
+               inout_word(c7, cJ, mk(7, SPADE), 0), "win");
+    check_case(&pass, &failed, "inout 7J inside J",
+               inout_word(c7, cJ, mk(11, SPADE), 0), "win");
+    check_case(&pass, &failed, "inout 7J outside 7",
+               inout_word(c7, cJ, mk(7, SPADE), 1), "loss");
+    check_case(&pass, &failed, "inout 7J outside J",
+               inout_word(c7, cJ, mk(11, SPADE), 1), "loss");
+    check_case(&pass, &failed, "inout 7J outside K",
+               inout_word(c7, cJ, mk(13, SPADE), 1), "win");
+    check_case(&pass, &failed, "inout 7J inside K",
+               inout_word(c7, cJ, mk(13, SPADE), 0), "loss");
+    check_case(&pass, &failed, "inout 7J outside 4",
+               inout_word(c7, cJ, mk(4, SPADE), 1), "win");
+    /* ace is high, so it lies outside a 7-J range */
+    check_case(&pass, &failed, "inout 7J outside A",
+               inout_word(c7, cJ, mk(1, SPADE), 1), "win");
 
     check_case(&pass, &failed, "suit s+s",
                rtb_suit_matches(mk(3, SPADE), SPADE) ? "match" : "nomatch",
@@ -632,7 +639,8 @@ static int parse_args(const cli_t *cli, rtb_script_t *sc, long *bet,
             *bet = b->values[0];
             continue;
         }
-        if (bet_is(b, "cashout")) {
+        /* only with a value: a bare "cashout" is a cash-out action */
+        if (bet_is(b, "cashout") && bet_has_value(b)) {
             if (b->nvalues != 1 || b->values[0] < 1 ||
                 b->values[0] > RTB_ROUNDS) {
                 fprintf(stderr, "ridethebus: '%s': cashout round must be "
@@ -816,20 +824,23 @@ void ridethebus_list_bets(void)
     puts("  3 INSIDE OR OUTSIDE [i]nside / [o]utside     pays 4x");
     puts("  4 SUIT              [h]earts [d]iamonds [c]lubs [s]pades "
          "pays 20x");
-    puts("after rounds 1-3 you may [c]ash out or [r]ide; riding and losing");
-    puts("forfeits the whole wager.  payouts are multiples of the ORIGINAL");
-    puts("wager, not of the running total.");
-    puts("pushes (re-drawn from the same deck, never a loss):");
-    puts("  round 2: a card of equal rank");
-    puts("  round 3: a card equal to either boundary rank");
+    puts("ties (ace is high, every card resolves its round - no re-draws):");
+    puts("  round 2: an equal rank counts as HIGHER");
+    puts("  round 3: either boundary rank counts as INSIDE");
+    puts("from round 2 on, [x] cash out shares the prompt with the round's");
+    puts("own options: picking a guess is what keeps you playing, and");
+    puts("losing forfeits the whole wager.  payouts are multiples of the");
+    puts("ORIGINAL wager, not of the running total.");
     puts("arguments:");
     puts("  bet:N          wager for the game (default 100)");
-    puts("  r,r,h,r,o,r,s  scripted actions (guess, ride/cash, ...)");
+    puts("  r,h,o,s        scripted guesses, one per round");
+    puts("  x | cash       cash out instead of playing the next round");
     puts("  cashout:N      simulation only: cash out after round N");
     puts("  check          run the rule self-test and exit");
     puts("usage:");
     puts("  ridethebus                 interactive game");
-    puts("  ridethebus r,r,h,r,o,r,s   scripted game");
+    puts("  ridethebus r,h,o,s         scripted: try all four rounds");
+    puts("  ridethebus r,h,x           scripted: cash out after round 2");
     puts("  ridethebus --runs 100000   simulate with random guesses");
     puts("results: BUS (all four rounds) | CASHOUT | LOSS");
 }
