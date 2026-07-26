@@ -1,0 +1,346 @@
+#include "blackjack_gui.h"
+
+#include <stdio.h>
+
+#include "gui.h"
+#include "cards.h"
+#include "games/blackjack.h"
+
+/* ---- layout ------------------------------------------------------------- */
+
+#define DEALER_CX     640
+#define DEALER_Y      96
+#define DEALER_CARD_H 170
+
+#define PLAYER_Y      330
+#define PLAYER_CARD_H 170
+#define SPLIT_CARD_H  120          /* smaller when several hands share the felt */
+#define CARD_GAP      14
+
+#define DEAL_STAGGER  0.10
+#define SHUFFLE_MSG   1.0          /* seconds the shuffle banner stays up */
+
+#define BTN_Y   648
+#define BTN_H   48
+
+typedef struct {
+    rng_t        *rng;
+    bj_session_t  s;
+    gui_reveal_t  reveal;          /* opening deal: player, dealer, ... */
+    bool          dealing;
+    int           seen_cards;      /* cards already announced with a sound */
+    double        shuffle_until;
+} bjgui_t;
+
+/* ---- helpers ------------------------------------------------------------ */
+
+static int round_card_count(const bj_session_t *s)
+{
+    const bj_round_t *r = &s->round;
+    int n = r->ndealer;
+
+    for (int i = 0; i < r->nhands; i++)
+        n += r->hands[i].n;
+    return n;
+}
+
+static void start_deal(bjgui_t *v)
+{
+    if (!bj_can_deal(&v->s))
+        return;
+    bj_deal(&v->s, v->rng);
+    if (v->s.shuffled)
+        v->shuffle_until = GetTime() + SHUFFLE_MSG;
+    /* opening deal is player, dealer, player, dealer hole */
+    gui_reveal_start(&v->reveal, 4, NULL, DEAL_STAGGER);
+    v->dealing = true;
+    v->seen_cards = round_card_count(&v->s);
+}
+
+/* Any card added after the opening deal (hits, doubles, split draws and
+ * the dealer's own draws) just clicks in with the deal sound. */
+static void note_new_cards(bjgui_t *v, const gui_ctx_t *g)
+{
+    int n = round_card_count(&v->s);
+
+    if (n > v->seen_cards) {
+        PlaySound(g->as->snd_deal);
+        v->seen_cards = n;
+    }
+}
+
+/* During the opening animation only the first `shown` cards exist. */
+static int opening_shown(const bjgui_t *v)
+{
+    int shown = 0;
+
+    for (int i = 0; i < 4; i++)
+        shown += gui_reveal_shown(&v->reveal, i);
+    return shown;
+}
+
+/* Opening deal order: player 0, dealer 0, player 1, dealer 1. */
+static int visible_player(const bjgui_t *v, int hand, int cards)
+{
+    if (!v->dealing || hand != 0)
+        return cards;
+    int shown = opening_shown(v);
+    return shown >= 3 ? 2 : shown >= 1 ? 1 : 0;
+}
+
+static int visible_dealer(const bjgui_t *v, int cards)
+{
+    if (!v->dealing)
+        return cards;
+    int shown = opening_shown(v);
+    return shown >= 4 ? 2 : shown >= 2 ? 1 : 0;
+}
+
+/* ---- drawing ------------------------------------------------------------ */
+
+static void draw_dealer(const gui_ctx_t *g, const bjgui_t *v)
+{
+    const bj_round_t *r = &v->s.round;
+    char buf[48];
+    int n = visible_dealer(v, r->ndealer);
+
+    gui_text_centered(g, true, "DEALER", DEALER_CX, DEALER_Y - 34, 28,
+                      GUI_CREAM);
+    for (int i = 0; i < n; i++) {
+        Rectangle rc = gui_card_row(g, i, n < r->ndealer ? r->ndealer : n,
+                                    DEALER_CARD_H, DEALER_CX, DEALER_Y,
+                                    CARD_GAP);
+        bool hidden = r->hole_hidden && i == 1;
+        gui_draw_card(g, rc, hidden ? NULL : &r->dealer[i]);
+    }
+    if (n > 0 && r->phase != BJ_PHASE_BET) {
+        if (r->hole_hidden)
+            snprintf(buf, sizeof buf, "%d", bj_total(r->dealer, 1));
+        else
+            snprintf(buf, sizeof buf, "%d",
+                     bj_total(r->dealer, r->ndealer));
+        gui_text_centered(g, true, buf, DEALER_CX,
+                          DEALER_Y + DEALER_CARD_H + 8, 32, GUI_CREAM);
+    }
+}
+
+static void draw_hands(const gui_ctx_t *g, const bjgui_t *v)
+{
+    const bj_round_t *r = &v->s.round;
+    int nh = r->nhands;
+    float card_h = nh > 1 ? SPLIT_CARD_H : PLAYER_CARD_H;
+    char buf[64];
+
+    if (nh == 0)
+        return;
+
+    for (int i = 0; i < nh; i++) {
+        const bj_hand_t *h = &r->hands[i];
+        float cx = nh == 1 ? 640.0f
+                           : 200.0f + i * (880.0f / (nh - 1 ? nh - 1 : 1));
+        if (nh == 2)
+            cx = i == 0 ? 420.0f : 860.0f;
+        else if (nh == 3)
+            cx = 260.0f + i * 380.0f;
+        else if (nh == 4)
+            cx = 200.0f + i * 293.0f;
+
+        int shown = visible_player(v, i, h->n);
+        bool active = i == r->active && r->phase == BJ_PHASE_PLAYER;
+
+        for (int c = 0; c < shown; c++) {
+            Rectangle rc = gui_card_row(g, c, h->n > shown ? h->n : shown,
+                                        card_h, cx, PLAYER_Y, CARD_GAP);
+            gui_draw_card(g, rc, &h->cards[c]);
+        }
+
+        if (shown > 0) {
+            snprintf(buf, sizeof buf, "%d",
+                     bj_total(h->cards, shown));
+            gui_text_centered(g, true, buf, cx, PLAYER_Y + card_h + 6, 32,
+                              active ? GUI_GOLD : GUI_CREAM);
+        }
+
+        char money[24];
+        bj_credits(money, sizeof money, h->wager);
+        snprintf(buf, sizeof buf, "%s%s", money,
+                 h->doubled ? " (DBL)" : "");
+        gui_text_centered(g, false, buf, cx, PLAYER_Y + card_h + 42, 22,
+                          GUI_DIM);
+
+        if (active)
+            gui_text_centered(g, true, "^", cx, PLAYER_Y + card_h + 66, 24,
+                              GUI_GOLD);
+
+        if (r->phase == BJ_PHASE_SETTLED && h->result != BJ_PENDING)
+            gui_text_centered(g, true, bj_result_word(h->result), cx,
+                              PLAYER_Y - 34, 26,
+                              h->result == BJ_WIN ||
+                              h->result == BJ_BLACKJACK ? GUI_GOLD
+                                                        : GUI_CREAM);
+    }
+}
+
+static void draw_status(const gui_ctx_t *g, const bjgui_t *v)
+{
+    char buf[64], money[24];
+
+    bj_credits(money, sizeof money, v->s.bankroll);
+    snprintf(buf, sizeof buf, "BANKROLL: %s", money);
+    gui_text(g, true, buf, 40, 596, 28, GUI_CREAM);
+
+    bj_credits(money, sizeof money, v->s.base_bet);
+    snprintf(buf, sizeof buf, "BET: %s", money);
+    gui_text_centered(g, true, buf, 640, 596, 28, GUI_CREAM);
+
+    /* cards remaining is shown on purpose so the player can count */
+    snprintf(buf, sizeof buf, "SHOE: %d / %d", bj_remaining(&v->s),
+             BJ_SHOE_CARDS);
+    gui_text(g, true, buf, 1240 - gui_text_width(g, true, buf, 28), 596,
+             28, GUI_DIM);
+}
+
+/* ---- one frame ---------------------------------------------------------- */
+
+static void bj_frame(const gui_ctx_t *g, void *state)
+{
+    bjgui_t *v = state;
+    bj_round_t *r = &v->s.round;
+    bool betting = r->phase == BJ_PHASE_BET || r->phase == BJ_PHASE_SETTLED;
+
+    /* opening deal animation */
+    if (v->dealing && gui_reveal_update(&v->reveal, g))
+        v->dealing = false;
+
+    /* ---- input ---- */
+    if (betting && !v->dealing) {
+        long step = 5 * BJ_HALF;
+        if (IsKeyPressed(KEY_RIGHT) || IsKeyPressed(KEY_UP)) {
+            bj_set_bet(&v->s, v->s.base_bet + step);
+            gui_play_click(g);
+        }
+        if (IsKeyPressed(KEY_LEFT) || IsKeyPressed(KEY_DOWN)) {
+            bj_set_bet(&v->s, v->s.base_bet - step);
+            gui_play_click(g);
+        }
+        if (v->s.bankroll < BJ_BET_MIN && IsKeyPressed(KEY_N)) {
+            bj_bankroll_reset(&v->s);
+            gui_play_click(g);
+        }
+        if (IsKeyPressed(KEY_SPACE) || IsKeyPressed(KEY_ENTER)) {
+            if (bj_can_deal(&v->s)) {
+                gui_play_click(g);
+                start_deal(v);
+            }
+        }
+    }
+
+    if (r->phase == BJ_PHASE_INSURANCE && !v->dealing) {
+        if (IsKeyPressed(KEY_I)) {
+            gui_play_click(g);
+            bj_insurance(&v->s, true, v->rng);
+        } else if (IsKeyPressed(KEY_N)) {
+            gui_play_click(g);
+            bj_insurance(&v->s, false, v->rng);
+        }
+    }
+
+    if (r->phase == BJ_PHASE_PLAYER && !v->dealing) {
+        static const struct { int key; bj_action_t act; } KEYS[] = {
+            { KEY_H, BJ_HIT }, { KEY_S, BJ_STAND }, { KEY_D, BJ_DOUBLE },
+            { KEY_P, BJ_SPLIT }, { KEY_R, BJ_SURRENDER },
+        };
+        for (size_t i = 0; i < sizeof KEYS / sizeof KEYS[0]; i++) {
+            if (IsKeyPressed(KEYS[i].key) &&
+                bj_legal(&v->s, KEYS[i].act)) {
+                gui_play_click(g);
+                bj_act(&v->s, KEYS[i].act, v->rng);
+                break;
+            }
+        }
+    }
+
+    note_new_cards(v, g);
+
+    /* ---- draw ---- */
+    DrawRectangle(0, 0, GUI_CANVAS_W, 56, GUI_FELT_DARK);
+    gui_text_centered(g, true, "BLACKJACK", GUI_CANVAS_W / 2, 12, 36,
+                      GUI_GOLD);
+
+    draw_dealer(g, v);
+    draw_hands(g, v);
+    draw_status(g, v);
+
+    if (GetTime() < v->shuffle_until)
+        gui_text_centered(g, true, "SHUFFLING...", 640, 268, 32, GUI_GOLD);
+
+    /* ---- controls ---- */
+    if (r->phase == BJ_PHASE_INSURANCE && !v->dealing) {
+        gui_text_centered(g, true, "DEALER SHOWS AN ACE", 640, 268, 32,
+                          GUI_GOLD);
+        if (gui_button(g, (Rectangle){ 380, BTN_Y, 240, BTN_H },
+                       "INSURANCE", v->s.bankroll >= v->s.base_bet / 2))
+            bj_insurance(&v->s, true, v->rng);
+        if (gui_button(g, (Rectangle){ 660, BTN_Y, 240, BTN_H },
+                       "NO INSURANCE", true))
+            bj_insurance(&v->s, false, v->rng);
+    } else if (r->phase == BJ_PHASE_PLAYER && !v->dealing) {
+        static const struct { const char *label; bj_action_t act; } ACTS[] = {
+            { "HIT", BJ_HIT }, { "STAND", BJ_STAND },
+            { "DOUBLE", BJ_DOUBLE }, { "SPLIT", BJ_SPLIT },
+            { "SURRENDER", BJ_SURRENDER },
+        };
+        float x = 90;
+        for (size_t i = 0; i < sizeof ACTS / sizeof ACTS[0]; i++) {
+            bool ok = bj_legal(&v->s, ACTS[i].act);
+            if (gui_button(g, (Rectangle){ x, BTN_Y, 210, BTN_H },
+                           ACTS[i].label, ok))
+                bj_act(&v->s, ACTS[i].act, v->rng);
+            x += 222;
+        }
+    } else if (betting && !v->dealing) {
+        bool can = bj_can_deal(&v->s);
+
+        if (gui_button(g, (Rectangle){ 300, BTN_Y, 110, BTN_H }, "BET -",
+                       v->s.base_bet > BJ_BET_MIN))
+            bj_set_bet(&v->s, v->s.base_bet - 5 * BJ_HALF);
+        if (gui_button(g, (Rectangle){ 430, BTN_Y, 110, BTN_H }, "BET +",
+                       v->s.base_bet < BJ_BET_MAX &&
+                       v->s.base_bet + 5 * BJ_HALF <= v->s.bankroll))
+            bj_set_bet(&v->s, v->s.base_bet + 5 * BJ_HALF);
+        if (gui_button(g, (Rectangle){ 620, BTN_Y, 260, BTN_H }, "DEAL",
+                       can))
+            start_deal(v);
+
+        if (v->s.bankroll < BJ_BET_MIN)
+            gui_text_centered(g, true, "OUT OF CREDITS - PRESS N", 640,
+                              540, 32, GUI_GOLD);
+        else if (r->phase == BJ_PHASE_BET)
+            gui_text_centered(g, false,
+                              "SPACE DEALS - ARROWS CHANGE THE BET", 640,
+                              548, 22, GUI_DIM);
+    }
+
+    /* round summary */
+    if (r->phase == BJ_PHASE_SETTLED && !v->dealing) {
+        char line[96], money[24];
+        bj_credits(money, sizeof money, r->returned - r->wagered);
+        if (r->insurance > 0)
+            snprintf(line, sizeof line, "NET %s   INSURANCE %s", money,
+                     r->insurance_won ? "WON" : "LOST");
+        else
+            snprintf(line, sizeof line, "NET %s", money);
+        gui_text_centered(g, true, line, 640, 540, 30,
+                          r->returned > r->wagered ? GUI_GOLD : GUI_CREAM);
+    }
+}
+
+int bj_gui_run(rng_t *rng)
+{
+    bjgui_t v = { 0 };
+
+    v.rng = rng;
+    bj_session_start(&v.s, rng);
+
+    return gui_run("casino - blackjack", bj_frame, &v);
+}

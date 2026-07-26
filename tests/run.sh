@@ -84,47 +84,192 @@ expect_exit "dice 2d6"         0 $C dice --seed 1 2d6 total:7
 expect_exit "dice bad range"   2 $C dice 2d6 total:13
 expect_exit "dice bad spec"    2 $C dice 0d6
 
-# --- blackjack ---------------------------------------------------------
+# --- blackjack (6-deck shoe, S17, 3:2, splits, surrender, insurance) -----
+# rule profile / shoe
+expect_grep "bj 6-deck shoe is 312" '"shoe_size":312' \
+    $C blackjack s --seed 1 --json
+# every exposed and hidden card leaves the shoe: seed 1 deals 2 + 5 cards
+expect_grep "bj shoe counts hole card too" '"shoe_remaining":305' \
+    $C blackjack s --seed 1 --json
+# the shoe persists between rounds rather than restarting at 312
+n=$($C blackjack s --seed 4 --iterations 3 --json |
+    sed -n '3p' | sed 's/.*"shoe_remaining":\([0-9]*\).*/\1/')
+[ "$n" -lt 300 ] && ok || bad "bj shoe persists across rounds (got $n)"
+# a reshuffle only happens between rounds, once past the cut card
+sh_before=$($C blackjack s --seed 4 --iterations 120 --json |
+    awk -F'"shoe_remaining":' '{split($2,a,","); r=a[1];
+        if (prev != "" && $0 ~ /"shuffled":true/) print prev; prev=r}' |
+    head -1)
+[ -n "$sh_before" ] && [ "$sh_before" -le 78 ] && ok || \
+    bad "bj reshuffles at the cut card (had $sh_before left)"
+# card accounting is exact every round (no mid-hand reshuffle, no leaks)
+$C blackjack s --seed 4 --iterations 60 --json | awk '
+/"shuffled":true/ { split($0, x, "\"shoe_remaining\":"); split(x[2], y, ",");
+                    prev = y[1]; next }
+{
+  n = gsub(/"[0-9AJQK][0-9a-z]?[cdhs]"/, "&");
+  split($0, x, "\"shoe_remaining\":"); split(x[2], y, ","); rem = y[1];
+  if (prev != "" && rem != prev - n) bad = 1;
+  prev = rem
+}
+END { print (bad ? "LEAK" : "EXACT") }' | grep -q EXACT && ok || \
+    bad "bj shoe accounting is exact every round"
+
+a=$($C blackjack bet:50 h,s --seed 42 --json)
+b=$($C blackjack bet:50 h,s --seed 42 --json)
+[ "$a" = "$b" ] && ok || bad "bj seeded runs identical"
+
+# totals: hard vs soft, dealer stands on soft 17 (S17)
+expect_grep "bj soft ace counts 11" '"cards":\["Ac","Ks"\],"total":21' \
+    $C blackjack s --seed 13 --json
+expect_grep "bj dealer stands on soft 17" '"dealer":\["6s","As"\],"dealer_total":17' \
+    $C blackjack s --seed 13 --json
+
+# natural blackjack pays 3:2 and is exact in half credits
+expect_grep "bj natural detected" '"result":"BLACKJACK"' \
+    $C blackjack s --seed 13 --json
+expect_grep "bj natural pays 3:2" "^BLACKJACK net=37.5 bankroll=1037.5$" \
+    $C blackjack s --seed 13 --quiet
+# push returns the wager
+expect_grep "bj push returns wager" "^PUSH net=0 bankroll=1000$" \
+    $C blackjack s --seed 16 --quiet
+# an ordinary win pays 1:1
+expect_grep "bj win pays 1:1" "^WIN net=25 bankroll=1025$" \
+    $C blackjack s --seed 1 --quiet
+
+# double: wager doubles, exactly one card, then the hand stands
+expect_grep "bj double doubles the wager" '"total":20,"wager":50.0,"doubled":true' \
+    $C blackjack d --seed 1 --json
+expect_grep "bj double takes one card only" '"cards":\["Qh","5s","5h"\]' \
+    $C blackjack d --seed 1 --json
+
+# surrender returns exactly half the wager
+expect_grep "bj surrender pays half" "^SURRENDER net=-12.5 bankroll=987.5$" \
+    $C blackjack r --seed 1 --quiet
+expect_exit "bj surrender only on first two cards" 0 $C blackjack h,r --seed 1
+
+# splits
+expect_grep "bj split creates two hands" \
+    '"cards":\["Qc","8s"\],"total":18,"wager":25.0,"doubled":false,"split":true' \
+    $C blackjack p,s,s --seed 39 --json
+expect_grep "bj split settles each hand" "^LOSS,LOSS net=-50 bankroll=950$" \
+    $C blackjack p,s,s --seed 39 --quiet
+expect_grep "bj resplit up to four hands" \
+    '"cards":\["4d","As"\]' $C blackjack p,p,p,s,s,s,s --seed 5879 --json
+n=$($C blackjack p,p,p,p,s,s,s,s --seed 5879 --json | grep -o '"cards"' | wc -l)
+[ "$n" -eq 4 ] && ok || bad "bj never exceeds four hands (got $n)"
+# double after split is allowed
+expect_grep "bj DAS allowed" '"cards":\["4s","3s","4c"\],"total":11,"wager":50.0,"doubled":true' \
+    $C blackjack p,d,s,s --seed 164 --json
+# split aces take exactly one card each and stand
+expect_grep "bj split aces one card" \
+    '"cards":\["Ac","6h"\],"total":17,.*"cards":\["Ad","Qs"\],"total":21' \
+    $C blackjack p --seed 393 --json
+expect_grep "bj split aces cannot double" '"cards":\["Ac","6h"\],"total":17,"wager":25.0,"doubled":false' \
+    $C blackjack p,d,d --seed 393 --json
+# 21 on a split hand is an ordinary 21, never a natural
+expect_grep "bj 21 after split is not blackjack" \
+    '"cards":\["Ad","Qs"\],"total":21,"wager":25.0,"doubled":false,"split":true,"result":"WIN"' \
+    $C blackjack p --seed 393 --json
+
+# dealer peeks: a dealer natural ends the round before any action
+expect_grep "bj dealer peek ends round" '"actions":\[\]' \
+    $C blackjack p,s,s --seed 267 --json
+expect_grep "bj dealer natural beats 12" '"dealer":\["Qh","Ah"\],"dealer_total":21' \
+    $C blackjack s --seed 267 --json
+
+# insurance: offered only against an ace, pays 2:1, settled independently
+expect_grep "bj insurance wins on dealer natural" '"insurance":{"taken":true,"won":true}' \
+    $C blackjack insurance,s --seed 25 --json
+expect_grep "bj insurance hedges the loss" '"net":0.0' \
+    $C blackjack insurance,s --seed 25 --json
+expect_grep "bj insurance loses otherwise" '"insurance":{"taken":true,"won":false}' \
+    $C blackjack insurance,s --seed 5 --json
+expect_grep "bj insurance costs half the wager" "^LOSS net=-37.5" \
+    $C blackjack insurance,s --seed 5 --quiet
+expect_grep "bj declining insurance" '"insurance":{"taken":false,"won":false}' \
+    $C blackjack noinsurance,s --seed 5 --json
+expect_grep "bj no insurance without an ace" '"insurance":{"taken":false' \
+    $C blackjack insurance,s --seed 1 --json
+
+# bankroll: wagers are debited and settlements credited across rounds
+expect_grep "bj bankroll tracks a loss" "bankroll=975$" \
+    $C blackjack s --seed 5 --quiet
+expect_grep "bj bet:N sets the wager" '"bet":100.0' \
+    $C blackjack bet:100 s --seed 1 --json
+expect_exit "bj bet below minimum"  2 $C blackjack bet:1 s
+expect_exit "bj bet above maximum"  2 $C blackjack bet:5000 s
+# an unaffordable double is refused and the hand simply stands
+expect_grep "bj cannot afford double" '"doubled":false,"split":false,"result":"WIN"' \
+    sh -c "$C blackjack bet:500 d,d --seed 8 --iterations 2 --json | tail -1"
+
+# scripted actions
 expect_exit "bj scripted h,s"          0 $C blackjack --seed 1 h,s
 expect_exit "bj scripted long words"   0 $C blackjack --seed 1 hit,hit,stand
 expect_exit "bj space separated"       0 $C blackjack --seed 1 h s
 expect_exit "bj double first action"   0 $C blackjack --seed 2 d
-expect_exit "bj unknown action"        2 $C blackjack split
+expect_exit "bj unknown action"        2 $C blackjack banana
 expect_exit "bj action takes no value" 2 $C blackjack h:1
 expect_exit "bj empty action segment"  2 $C blackjack h,,s
-# seed 2: opening hand 9, first hit keeps it < 21, so 'd' is consumed
-expect_exit "bj double after hit"      2 $C blackjack --seed 2 h,d,s
+# an illegal scripted action falls back to standing, so one script can
+# drive a whole simulation without dying on an unsuitable hand
+expect_grep "bj illegal action stands" '"actions":\["hit","stand"\]' \
+    $C blackjack --seed 1 h,d,s --json
 
-a=$($C blackjack --seed 42 h,s --json)
-b=$($C blackjack --seed 42 h,s --json)
-[ "$a" = "$b" ] && ok || bad "bj seeded runs identical"
-
-expect_grep "bj quiet word"     "^\(WIN\|LOSS\|PUSH\|BLACKJACK\)$" \
+expect_grep "bj quiet line"     "^\(WIN\|LOSS\|PUSH\|BLACKJACK\|SURRENDER\).* net=.* bankroll=" \
     sh -c "$C blackjack --seed 5 s --quiet 2>/dev/null"
 expect_grep "bj json game key"  '"game":"blackjack"' $C blackjack --seed 5 s --json
 expect_grep "bj json result"    '"result":"'         $C blackjack --seed 5 s --json
-expect_grep "bj json actions"   '"actions":\["stand"\]' $C blackjack --seed 5 s --json
+expect_grep "bj json actions"   '"actions":\["stand"\]' $C blackjack --seed 1 s --json
 expect_grep "bj transcript"     "Dealer:"            $C blackjack --seed 1 h,s
-expect_grep "bj list-bets"      "double"             $C blackjack --list-bets
+expect_grep "bj list-bets"      "6-deck"             $C blackjack --list-bets
+expect_grep "bj list-bets surrender" "surrender"     $C blackjack --list-bets
+expect_grep "bj description"    "6-deck shoe"        $C --help
 
 n=$($C blackjack --seed 7 --iterations 5 s --quiet | wc -l)
 [ "$n" -eq 5 ] && ok || bad "bj iterations produce 5 lines (got $n)"
 
+# stats
 expect_grep "bj stats table" "RESULT" $C blackjack --seed 7 --iterations 200 --stats s
 expect_grep "bj stats json"  '"iterations":200' \
     $C blackjack --seed 7 --iterations 200 --stats s --json
+expect_grep "bj stats money" '"wagered":' \
+    $C blackjack --seed 7 --iterations 200 --stats s --json
+expect_grep "bj stats splits"  '"splits":' \
+    $C blackjack --seed 7 --runs 200 p,s,s,s --json
+# not every round reaches a surrender decision: a dealer natural ends
+# some rounds at the peek
+expect_grep "bj stats surrenders" '"surrenders":182' \
+    $C blackjack --seed 7 --runs 200 r --json
+# wagered/returned/net must agree
+$C blackjack --seed 3 --runs 5000 h,s --json | sed 's/.*"wagered":\([0-9.]*\),"returned":\([0-9.]*\),"net":\([-0-9.]*\).*/\1 \2 \3/' |
+awk '{ printf "%s\n", ($1 - $2 + $3 < 0.001 && $2 - $1 - $3 < 0.001) ? "OK" : "BAD" }' |
+grep -q OK && ok || bad "bj stats net equals returned minus wagered"
+# always-stand return is well below break even but not absurd
+r=$($C blackjack --seed 11 --runs 20000 s --json |
+    sed 's/.*"return_per_unit":\([0-9.]*\).*/\1/')
+case "$r" in 0.9*|0.8*) ok ;; *) bad "bj always-stand return plausible (got $r)" ;; esac
 
-# interactive: EOF stands, piped actions are consumed, quiet stdout is clean
-expect_exit "bj interactive EOF"  0 sh -c "$C blackjack --seed 1 </dev/null"
-expect_exit "bj piped hit"        0 sh -c "echo h | $C blackjack --seed 1"
-expect_grep "bj quiet interactive stdout clean" \
-    "^\(WIN\|LOSS\|PUSH\|BLACKJACK\)$" \
-    sh -c "$C blackjack --seed 1 --quiet </dev/null 2>/dev/null"
+# simulation needs a script; interactive play still works
+expect_exit "runs bj needs script"  2 $C blackjack --runs 10
+expect_exit "bj interactive EOF"    0 sh -c "$C blackjack --seed 1 </dev/null"
+expect_exit "bj piped hit"          0 sh -c "echo h | $C blackjack --seed 1"
 
 ln -sf casino blackjack
 expect_grep "bj symlink invocation" '"game":"blackjack"' \
     sh -c "./blackjack --seed 42 s --json"
 rm -f blackjack
+
+# between-round phases: the GUI deals, re-bets and re-buys from a settled
+# table, which the CLI never does (it plays one round per iteration), so
+# the engine API is exercised directly.  See tests/bj_phase.c.
+if ${CC:-cc} -std=c11 -Isrc -o build/bj_phase_test tests/bj_phase.c \
+        src/games/blackjack.c src/cardart.c src/cards.c src/cli.c \
+        src/output.c src/rng.c >/dev/null 2>&1; then
+    expect_exit "bj settled is a between-round phase" 0 ./build/bj_phase_test
+else
+    bad "bj phase test did not build"
+fi
 
 # --- baccarat -----------------------------------------------------------
 expect_exit "bac player bet"        0 $C baccarat player --seed 1
@@ -412,6 +557,25 @@ expect_exit "vp short deal"        2 $C videopoker deal:ah,kh
 expect_exit "vp duplicate card"    2 $C videopoker deal:ah,ah,2c,3c,4c
 expect_exit "vp deal plus hold"    2 $C videopoker deal:2c,5d,9h,jc,kh hold:1
 
+# --optimal is the GUI strategy trainer: videopoker --gui only
+expect_exit "vp optimal needs gui"   2 $C videopoker --optimal
+expect_exit "vp optimal alone+seed"  2 $C videopoker --optimal --seed 1
+expect_exit "vp optimal rejects bets" 2 $C videopoker --gui --optimal hold:1
+expect_exit "vp optimal rejects json" 2 $C videopoker --gui --optimal --json
+expect_exit "bj optimal rejected"    2 $C blackjack --gui --optimal
+expect_exit "bac optimal rejected"   2 $C baccarat --gui --optimal
+expect_exit "roulette optimal rejected" 2 $C roulette --optimal
+expect_grep "vp optimal in help"     "optimal.*GUI strategy" $C videopoker --help
+expect_grep "vp optimal in list-bets" "gui --optimal" $C videopoker --list-bets
+
+# the terminal trainer is unaffected by the GUI trainer
+expect_grep "vp trainer runs"    "VIDEO POKER TRAINER" \
+    sh -c "echo 1,3 | $C videopoker --trainer --seed 1"
+expect_grep "vp trainer grades"  "^OPTIMAL$\|^SUBOPTIMAL$" \
+    sh -c "echo 1,3 | $C videopoker --trainer --seed 1"
+expect_grep "vp trainer summary" "Optimal decisions: 1" \
+    sh -c "echo 1,3 | $C videopoker --trainer --seed 1"
+
 # output modes and determinism
 a=$($C videopoker hold:1,3 --seed 123 --json)
 b=$($C videopoker hold:1,3 --seed 123 --json)
@@ -466,7 +630,7 @@ expect_grep "art hidden hole card" "│░░░░░░░░░│" \
 expect_grep "art vp positions" "1           2           3           4           5" \
     env CASINO_CARDS=art $C videopoker deal:as,7d,kh,2c,5s
 # machine output is art-free even when art is forced
-expect_grep "art quiet unchanged" "^\(WIN\|LOSS\|PUSH\|BLACKJACK\)$" \
+expect_grep "art quiet unchanged" "^\(WIN\|LOSS\|PUSH\|BLACKJACK\).* net=" \
     sh -c "CASINO_CARDS=art $C blackjack --seed 5 s --quiet 2>/dev/null"
 expect_grep "art json unchanged" '^{"game":"blackjack"' \
     sh -c "CASINO_CARDS=art $C blackjack --seed 5 s --json 2>/dev/null"
@@ -608,9 +772,12 @@ expect_exit "bac gui with bet"    2 $C baccarat --gui player
 expect_exit "bac gui with quiet"  2 $C baccarat --gui --quiet
 expect_exit "bac gui with json"   2 $C baccarat --gui --json
 expect_exit "bac gui with runs"   2 $C baccarat --gui --runs 10
+expect_exit "bj gui with actions" 2 $C blackjack --gui s
+expect_exit "bj gui with quiet"   2 $C blackjack --gui --quiet
+expect_exit "bj gui with runs"    2 $C blackjack --gui --runs 10
 # missing assets (or a CLI-only build) must fail cleanly, never crash
 root=$PWD
-for g in videopoker baccarat; do
+for g in videopoker baccarat blackjack; do
     out=$(cd /tmp && "$root/casino" $g --gui 2>&1)
     case "$out" in
     *"missing asset"*|*"no GUI support"*) ok ;;

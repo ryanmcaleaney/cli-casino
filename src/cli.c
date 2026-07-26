@@ -116,6 +116,8 @@ int cli_parse(int argc, char **argv, cli_t *out, char *err, size_t errlen)
                 out->trainer = true;
             } else if (strcmp(arg, "--gui") == 0) {
                 out->gui = true;
+            } else if (strcmp(arg, "--optimal") == 0) {
+                out->optimal = true;
             } else if (strncmp(arg, "--seed", 6) == 0 &&
                        (arg[6] == '\0' || arg[6] == '=')) {
                 if (opt_value(argc, argv, &i, "--seed", &val, err, errlen))

@@ -24,7 +24,7 @@ const game_t GAMES[] = {
     { "dice",      "generic dice (NdM)",      gdice_run,    gdice_list_bets },
     { "sicbo",     "sic bo (planned)",        NULL, NULL },
     { "baccarat",  "Punto Banco baccarat",    baccarat_run, baccarat_list_bets },
-    { "blackjack", "blackjack (single deck, S17)", blackjack_run,
+    { "blackjack", "blackjack (6-deck shoe, S17)", blackjack_run,
                                                    blackjack_list_bets },
     { "craps",     "craps (pass-line rounds)", craps_run,   craps_list_bets },
     { "slots",     "3-reel slot machine (3x3 window)", slots_run, slots_list_bets },
@@ -64,7 +64,10 @@ static void global_usage(FILE *f)
         "  --stats         summary statistics instead of per-round output\n"
         "  --runs N        shorthand for --iterations N --stats\n"
         "  --trainer       interactive strategy trainer (videopoker only)\n"
-        "  --gui           graphical frontend (videopoker, baccarat)\n"
+        "  --gui           graphical frontend (videopoker, baccarat,\n"
+        "                  blackjack)\n"
+        "  --optimal       GUI strategy training mode "
+        "(videopoker --gui only)\n"
         "\n"
         "games:\n");
     for (int i = 0; i < NGAMES; i++)
@@ -135,10 +138,17 @@ int main(int argc, char **argv)
                 game->name);
         return 2;
     }
+    if (cli.optimal && strcmp(game->name, "videopoker") != 0) {
+        fprintf(stderr, "%s: --optimal is only available for "
+                        "videopoker --gui\n", game->name);
+        return 2;
+    }
     if (cli.gui && strcmp(game->name, "videopoker") != 0 &&
-        strcmp(game->name, "baccarat") != 0) {
+        strcmp(game->name, "baccarat") != 0 &&
+        strcmp(game->name, "blackjack") != 0) {
         fprintf(stderr, "%s: --gui is not available for this game "
-                        "(try videopoker or baccarat)\n", game->name);
+                        "(try videopoker, baccarat or blackjack)\n",
+                game->name);
         return 2;
     }
 

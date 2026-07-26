@@ -275,6 +275,35 @@ static int vp_pay(const card_t hand[5])
     return VP_PAYOUT[vp_classify(hand, NULL)];
 }
 
+/* --- strategy interface for frontends (see videopoker.h) --------------- */
+
+void vp_front_solve(const card_t hand[5], vp_strategy_t *out)
+{
+    vp_solve(hand, vp_pay, out->evs);
+    out->best = vp_solve_best(out->evs);
+}
+
+bool vp_front_hold_optimal(const vp_strategy_t *s, uint32_t mask)
+{
+    return mask < VP_NMASKS &&
+           vp_ev_equal(&s->evs[mask], &s->evs[s->best]);
+}
+
+double vp_front_hold_ev(const vp_strategy_t *s, uint32_t mask)
+{
+    return mask < VP_NMASKS ? vp_ev(&s->evs[mask]) : 0.0;
+}
+
+double vp_front_best_ev(const vp_strategy_t *s)
+{
+    return vp_ev(&s->evs[s->best]);
+}
+
+uint32_t vp_front_best_mask(const vp_strategy_t *s)
+{
+    return (uint32_t)s->best;
+}
+
 static const char *mask_positions(uint32_t mask, char *buf, size_t len)
 {
     size_t off = 0;
@@ -419,16 +448,23 @@ int videopoker_run(const cli_t *cli, rng_t *rng)
         if (cli->nbets != 0 || cli->quiet || cli->json || cli->stats ||
             cli->trainer || cli->iterations != 1) {
             fprintf(stderr, "videopoker: --gui takes no other arguments "
-                            "(only --seed)\n");
+                            "(only --optimal and --seed)\n");
             return 2;
         }
 #ifdef CASINO_GUI
-        return vp_gui_run(rng);
+        return vp_gui_run(rng, cli->optimal);
 #else
         fprintf(stderr, "videopoker: this build has no GUI support "
                         "(install raylib and run make again)\n");
         return 2;
 #endif
+    }
+
+    if (cli->optimal) {
+        fprintf(stderr, "videopoker: --optimal is a GUI training mode; "
+                        "use --gui --optimal (or --trainer in the "
+                        "terminal)\n");
+        return 2;
     }
 
     if (cli->trainer) {
@@ -650,6 +686,9 @@ void videopoker_list_bets(void)
          "hand");
     puts("  videopoker --trainer       interactive strategy trainer "
          "(optimal-hold EV)");
+    puts("  videopoker --gui           graphical video poker machine");
+    puts("  videopoker --gui --optimal graphical trainer: live "
+         "optimal/sub-optimal feedback");
     puts("payouts (informational, 1-unit bet):");
     puts("  ROYAL_FLUSH 250   STRAIGHT_FLUSH 50   FOUR_OF_A_KIND 25");
     puts("  FULL_HOUSE 9      FLUSH 6             STRAIGHT 4");
