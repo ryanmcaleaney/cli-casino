@@ -39,6 +39,7 @@ typedef struct cli {
     bool     trainer;           /* interactive strategy trainer (videopoker) */
     bool     gui;               /* graphical frontend (videopoker) */
     bool     optimal;           /* GUI strategy training (videopoker --gui) */
+    bool     counting;          /* GUI Hi-Lo training (blackjack --gui) */
     bool     seeded;
     uint64_t seed;
     long     iterations;        /* >= 1, default 1 */

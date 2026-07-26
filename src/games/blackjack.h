@@ -119,6 +119,38 @@ bool bj_natural(const bj_hand_t *h);
 
 int  bj_remaining(const bj_session_t *s);
 
+/* ---- Hi-Lo card counting (GUI training mode) --------------------------- */
+
+/* Hi-Lo tag: 2-6 = +1, 7-9 = 0, 10/J/Q/K/A = -1. */
+int    bj_hilo(card_t c);
+/* Cards dealt out of the current shoe since it was last shuffled, and the
+ * i-th of them in deal order (a zero card outside that range). */
+int    bj_dealt_count(const bj_session_t *s);
+card_t bj_dealt_card(const bj_session_t *s, int i);
+
+/*
+ * Running count over the cards a player has actually seen.  The frontend
+ * decides what is visible - it knows about deal animations and the face
+ * down hole card - and this folds each dealt card in exactly once.  A
+ * reshuffled shoe restarts the count on its own.
+ */
+typedef struct {
+    int running;
+    int counted;        /* dealt-card prefix already folded in */
+    int hole_done;      /* dealt index of the hole card counted, -1 = none */
+} bj_count_t;
+
+void bj_count_reset(bj_count_t *c);
+/*
+ * `visible` is how many dealt cards are on the felt, in deal order.
+ * `hole` is the dealt index of the dealer's face-down card (-1 when there
+ * is none); it is skipped until `hole_shown`, then counted exactly once.
+ */
+void   bj_count_update(bj_count_t *c, const bj_session_t *s, int visible,
+                       int hole, bool hole_shown);
+double bj_decks_left(const bj_session_t *s);
+double bj_true_count(const bj_count_t *c, const bj_session_t *s);
+
 const char *bj_result_word(bj_result_t r);
 const char *bj_action_word(bj_action_t a);
 /* Format half-credits as credits, e.g. "1000" or "1007.5". */

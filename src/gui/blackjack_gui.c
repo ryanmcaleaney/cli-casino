@@ -30,6 +30,8 @@ typedef struct {
     bool          dealing;
     int           seen_cards;      /* cards already announced with a sound */
     double        shuffle_until;
+    bool          counting;        /* --counting Hi-Lo trainer */
+    bj_count_t    count;
 } bjgui_t;
 
 /* ---- helpers ------------------------------------------------------------ */
@@ -49,8 +51,10 @@ static void start_deal(bjgui_t *v)
     if (!bj_can_deal(&v->s))
         return;
     bj_deal(&v->s, v->rng);
-    if (v->s.shuffled)
+    if (v->s.shuffled) {
         v->shuffle_until = GetTime() + SHUFFLE_MSG;
+        bj_count_reset(&v->count);   /* a fresh shoe starts from zero */
+    }
     /* opening deal is player, dealer, player, dealer hole */
     gui_reveal_start(&v->reveal, 4, NULL, DEAL_STAGGER);
     v->dealing = true;
@@ -94,6 +98,45 @@ static int visible_dealer(const bjgui_t *v, int cards)
         return cards;
     int shown = opening_shown(v);
     return shown >= 4 ? 2 : shown >= 2 ? 1 : 0;
+}
+
+/* ---- Hi-Lo counting: which dealt cards the player has been shown ------- */
+
+/*
+ * Every card drawn during a round ends up in a hand, so the round's first
+ * card sits at `dealt - round_card_count` and the dealer's hole card is
+ * the fourth of them (the deal order is player, dealer, player, hole).
+ */
+static int round_first_dealt(const bjgui_t *v)
+{
+    return bj_dealt_count(&v->s) - round_card_count(&v->s);
+}
+
+static int hole_dealt_index(const bjgui_t *v)
+{
+    if (v->s.round.ndealer < 2)
+        return -1;                  /* no round in progress */
+    return round_first_dealt(v) + 3;
+}
+
+/* Cards on the felt, in deal order: the opening four arrive with the
+ * reveal animation, everything dealt after it is face up at once. */
+static int visible_dealt(const bjgui_t *v)
+{
+    if (!v->dealing)
+        return bj_dealt_count(&v->s);
+    return round_first_dealt(v) + opening_shown(v);
+}
+
+/* The hole card turns face up when the engine reveals it - but never
+ * before the opening animation has put it on the table. */
+static bool hole_face_up(const bjgui_t *v)
+{
+    const bj_round_t *r = &v->s.round;
+
+    if (r->ndealer < 2 || r->hole_hidden)
+        return false;
+    return !v->dealing || opening_shown(v) >= 4;
 }
 
 /* ---- drawing ------------------------------------------------------------ */
@@ -200,6 +243,46 @@ static void draw_status(const gui_ctx_t *g, const bjgui_t *v)
              28, GUI_DIM);
 }
 
+/* Counts read with a sign, and never as "+0". */
+static void count_text(char *buf, size_t len, int v)
+{
+    snprintf(buf, len, "%s%d", v > 0 ? "+" : "", v);
+}
+
+/* One decimal place, signed from the rounded value so a hair below zero
+ * does not print as "-0.0". */
+static void true_text(char *buf, size_t len, double v)
+{
+    long tenths = (long)(v * 10.0 + (v >= 0 ? 0.5 : -0.5));
+    long mag;
+
+    if (tenths > 9999)              /* a sliver of a shoe cannot overflow */
+        tenths = 9999;
+    else if (tenths < -9999)
+        tenths = -9999;
+    mag = tenths < 0 ? -tenths : tenths;
+
+    snprintf(buf, len, "%s%ld.%ld", tenths > 0 ? "+" : tenths < 0 ? "-" : "",
+             mag / 10, mag % 10);
+}
+
+/* Two lines in the title bar: the only part of the table that never has
+ * cards, buttons or money on it. */
+static void draw_count(const gui_ctx_t *g, const bjgui_t *v)
+{
+    char line[80], rc[12], tc[12];
+
+    count_text(rc, sizeof rc, v->count.running);
+    true_text(tc, sizeof tc, bj_true_count(&v->count, &v->s));
+    snprintf(line, sizeof line, "RUNNING COUNT: %s   TRUE COUNT: %s", rc, tc);
+    gui_text(g, true, line, 1240 - gui_text_width(g, true, line, 22), 4, 22,
+             GUI_CREAM);
+
+    snprintf(line, sizeof line, "DECKS LEFT: %.1f", bj_decks_left(&v->s));
+    gui_text(g, true, line, 1240 - gui_text_width(g, true, line, 22), 28, 22,
+             GUI_DIM);
+}
+
 /* ---- one frame ---------------------------------------------------------- */
 
 static void bj_frame(const gui_ctx_t *g, void *state)
@@ -262,10 +345,17 @@ static void bj_frame(const gui_ctx_t *g, void *state)
 
     note_new_cards(v, g);
 
+    /* the count follows what is on the felt, card by card */
+    if (v->counting)
+        bj_count_update(&v->count, &v->s, visible_dealt(v),
+                        hole_dealt_index(v), hole_face_up(v));
+
     /* ---- draw ---- */
     DrawRectangle(0, 0, GUI_CANVAS_W, 56, GUI_FELT_DARK);
     gui_text_centered(g, true, "BLACKJACK", GUI_CANVAS_W / 2, 12, 36,
                       GUI_GOLD);
+    if (v->counting)
+        draw_count(g, v);
 
     draw_dealer(g, v);
     draw_hands(g, v);
@@ -335,12 +425,15 @@ static void bj_frame(const gui_ctx_t *g, void *state)
     }
 }
 
-int bj_gui_run(rng_t *rng)
+int bj_gui_run(rng_t *rng, bool counting)
 {
     bjgui_t v = { 0 };
 
     v.rng = rng;
+    v.counting = counting;
+    bj_count_reset(&v.count);
     bj_session_start(&v.s, rng);
 
-    return gui_run("casino - blackjack", bj_frame, &v);
+    return gui_run(counting ? "casino - blackjack counting trainer"
+                            : "casino - blackjack", bj_frame, &v);
 }

@@ -65,6 +65,77 @@ int bj_remaining(const bj_session_t *s)
     return shoe_remaining(&s->shoe);
 }
 
+/* ---- Hi-Lo card counting (see blackjack.h) ----------------------------- */
+
+int bj_hilo(card_t c)
+{
+    if (c.rank >= 2 && c.rank <= 6)
+        return 1;
+    if (c.rank >= 7 && c.rank <= 9)
+        return 0;
+    if (c.rank == 1 || (c.rank >= 10 && c.rank <= 13))
+        return -1;                  /* ten, court card or ace */
+    return 0;                       /* not a card */
+}
+
+int bj_dealt_count(const bj_session_t *s)
+{
+    return s->shoe.pos;
+}
+
+card_t bj_dealt_card(const bj_session_t *s, int i)
+{
+    if (i < 0 || i >= s->shoe.pos)
+        return (card_t){ 0, 0 };
+    return s->shoe.cards[i];
+}
+
+void bj_count_reset(bj_count_t *c)
+{
+    c->running = 0;
+    c->counted = 0;
+    c->hole_done = -1;
+}
+
+void bj_count_update(bj_count_t *c, const bj_session_t *s, int visible,
+                     int hole, bool hole_shown)
+{
+    int dealt = bj_dealt_count(s);
+
+    /* a reshuffle puts the shoe back to the start: those cards are gone */
+    if (c->counted > dealt)
+        bj_count_reset(c);
+    if (visible > dealt)
+        visible = dealt;
+
+    /* the prefix only ever moves forward, so no card is counted twice */
+    while (c->counted < visible) {
+        int i = c->counted++;
+        if (i == hole)
+            continue;               /* face down: counted when it turns */
+        c->running += bj_hilo(bj_dealt_card(s, i));
+    }
+
+    if (hole_shown && hole >= 0 && hole < dealt && c->hole_done != hole) {
+        c->running += bj_hilo(bj_dealt_card(s, hole));
+        c->hole_done = hole;
+    }
+}
+
+double bj_decks_left(const bj_session_t *s)
+{
+    return bj_remaining(s) / 52.0;
+}
+
+double bj_true_count(const bj_count_t *c, const bj_session_t *s)
+{
+    double decks = bj_decks_left(s);
+
+    /* the engine reshuffles at the cut card, so this never divides by a
+     * sliver of a deck in practice; an exhausted shoe still cannot fault */
+    return decks > 0.0 ? c->running / decks : (double)c->running;
+}
+
 const char *bj_result_word(bj_result_t r)
 {
     static const char *const W[] = {
@@ -903,16 +974,22 @@ int blackjack_run(const cli_t *cli, rng_t *rng)
         if (sc.n != 0 || cli->quiet || cli->json || cli->stats ||
             cli->iterations != 1) {
             fprintf(stderr, "blackjack: --gui takes no other arguments "
-                            "(only --seed)\n");
+                            "(only --counting and --seed)\n");
             return 2;
         }
 #ifdef CASINO_GUI
-        return bj_gui_run(rng);
+        return bj_gui_run(rng, cli->counting);
 #else
         fprintf(stderr, "blackjack: this build has no GUI support "
                         "(install raylib and run make again)\n");
         return 2;
 #endif
+    }
+
+    if (cli->counting) {
+        fprintf(stderr, "blackjack: --counting is a GUI training mode; "
+                        "use --gui --counting\n");
+        return 2;
     }
 
     bool interactive = sc.n == 0;

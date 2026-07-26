@@ -68,6 +68,8 @@ static void global_usage(FILE *f)
         "                  blackjack, ridethebus)\n"
         "  --optimal       GUI strategy training mode "
         "(videopoker --gui only)\n"
+        "  --counting      GUI Hi-Lo counting trainer "
+        "(blackjack --gui only)\n"
         "\n"
         "games:\n");
     for (int i = 0; i < NGAMES; i++)
@@ -141,6 +143,11 @@ int main(int argc, char **argv)
     if (cli.optimal && strcmp(game->name, "videopoker") != 0) {
         fprintf(stderr, "%s: --optimal is only available for "
                         "videopoker --gui\n", game->name);
+        return 2;
+    }
+    if (cli.counting && strcmp(game->name, "blackjack") != 0) {
+        fprintf(stderr, "%s: --counting is only available for "
+                        "blackjack --gui\n", game->name);
         return 2;
     }
     if (cli.gui && strcmp(game->name, "videopoker") != 0 &&

@@ -271,6 +271,16 @@ else
     bad "bj phase test did not build"
 fi
 
+# Hi-Lo counting: the tag table, counting each card exactly once, the
+# face-down hole card and the reset on a reshuffle.  See tests/bj_count.c.
+if ${CC:-cc} -std=c11 -Isrc -o build/bj_count_test tests/bj_count.c \
+        src/games/blackjack.c src/cardart.c src/cards.c src/cli.c \
+        src/output.c src/rng.c >/dev/null 2>&1; then
+    expect_exit "bj hi-lo counting checks" 0 ./build/bj_count_test
+else
+    bad "bj counting test did not build"
+fi
+
 # --- baccarat -----------------------------------------------------------
 expect_exit "bac player bet"        0 $C baccarat player --seed 1
 expect_exit "bac banker bet"        0 $C baccarat banker --seed 1
@@ -781,6 +791,17 @@ expect_exit "rtb gui with quiet"   2 $C ridethebus --gui --quiet
 expect_exit "rtb gui with json"    2 $C ridethebus --gui --json
 expect_exit "rtb gui with runs"    2 $C ridethebus --gui --runs 10
 expect_exit "rtb gui with optimal" 2 $C ridethebus --gui --optimal
+# --counting is the blackjack GUI Hi-Lo trainer, and nothing else
+expect_exit "bj counting needs gui"    2 $C blackjack --counting
+expect_exit "bj counting alone+seed"   2 $C blackjack --counting --seed 1
+expect_exit "bj counting with script"  2 $C blackjack --gui --counting s
+expect_exit "bj counting with json"    2 $C blackjack --gui --counting --json
+expect_exit "bj counting with runs"    2 $C blackjack --gui --counting --runs 10
+expect_exit "vp counting rejected"     2 $C videopoker --gui --counting
+expect_exit "bac counting rejected"    2 $C baccarat --gui --counting
+expect_exit "rtb counting rejected"    2 $C ridethebus --gui --counting
+expect_exit "roulette counting rejected" 2 $C roulette --counting
+expect_grep "counting in global help"  "counting.*Hi-Lo" $C blackjack --help
 # missing assets (or a CLI-only build) must fail cleanly, never crash
 root=$PWD
 for g in videopoker baccarat blackjack ridethebus; do
