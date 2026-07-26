@@ -775,9 +775,15 @@ expect_exit "bac gui with runs"   2 $C baccarat --gui --runs 10
 expect_exit "bj gui with actions" 2 $C blackjack --gui s
 expect_exit "bj gui with quiet"   2 $C blackjack --gui --quiet
 expect_exit "bj gui with runs"    2 $C blackjack --gui --runs 10
+expect_exit "rtb gui with actions" 2 $C ridethebus --gui r,h,o,s
+expect_exit "rtb gui with bet"     2 $C ridethebus --gui bet:250
+expect_exit "rtb gui with quiet"   2 $C ridethebus --gui --quiet
+expect_exit "rtb gui with json"    2 $C ridethebus --gui --json
+expect_exit "rtb gui with runs"    2 $C ridethebus --gui --runs 10
+expect_exit "rtb gui with optimal" 2 $C ridethebus --gui --optimal
 # missing assets (or a CLI-only build) must fail cleanly, never crash
 root=$PWD
-for g in videopoker baccarat blackjack; do
+for g in videopoker baccarat blackjack ridethebus; do
     out=$(cd /tmp && "$root/casino" $g --gui 2>&1)
     case "$out" in
     *"missing asset"*|*"no GUI support"*) ok ;;
@@ -950,6 +956,17 @@ ln -sf casino ridethebus
 expect_grep "rtb symlink invocation" '"game":"ridethebus"' \
     sh -c "./ridethebus r,h,o,s --seed 17 --json"
 rm -f ridethebus
+
+# frontend session API the GUI plays through (stage transitions, payout
+# ladder, cash out, forfeit on a loss, one card per round).  See
+# tests/rtb_front.c.
+if ${CC:-cc} -std=c11 -Isrc -o build/rtb_front_test tests/rtb_front.c \
+        src/games/ridethebus.c src/cardart.c src/cards.c src/cli.c \
+        src/output.c src/rng.c >/dev/null 2>&1; then
+    expect_exit "rtb frontend session checks" 0 ./build/rtb_front_test
+else
+    bad "rtb frontend test did not build"
+fi
 
 echo
 echo "passed: $pass  failed: $fail"

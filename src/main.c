@@ -65,7 +65,7 @@ static void global_usage(FILE *f)
         "  --runs N        shorthand for --iterations N --stats\n"
         "  --trainer       interactive strategy trainer (videopoker only)\n"
         "  --gui           graphical frontend (videopoker, baccarat,\n"
-        "                  blackjack)\n"
+        "                  blackjack, ridethebus)\n"
         "  --optimal       GUI strategy training mode "
         "(videopoker --gui only)\n"
         "\n"
@@ -145,10 +145,11 @@ int main(int argc, char **argv)
     }
     if (cli.gui && strcmp(game->name, "videopoker") != 0 &&
         strcmp(game->name, "baccarat") != 0 &&
-        strcmp(game->name, "blackjack") != 0) {
+        strcmp(game->name, "blackjack") != 0 &&
+        strcmp(game->name, "ridethebus") != 0) {
         fprintf(stderr, "%s: --gui is not available for this game "
-                        "(try videopoker, baccarat or blackjack)\n",
-                game->name);
+                        "(try videopoker, baccarat, blackjack or "
+                        "ridethebus)\n", game->name);
         return 2;
     }
 

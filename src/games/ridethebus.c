@@ -9,11 +9,11 @@
 #include "cards.h"
 #include "output.h"
 
-/* ---- payout table (single source of truth) ----------------------------- */
+#ifdef CASINO_GUI
+#include "gui/ridethebus_gui.h"
+#endif
 
-#define RTB_ROUNDS      4
-#define RTB_BET_DEFAULT 100
-#define RTB_BET_MAX     1000000
+/* ---- payout table (single source of truth) ----------------------------- */
 
 /* Multiplier applied to the ORIGINAL wager after winning round N. */
 static const long RTB_MULT[RTB_ROUNDS] = { 2, 3, 4, 20 };
@@ -24,12 +24,6 @@ static const char *const ROUND_TITLE[RTB_ROUNDS] = {
 static const char *const ROUND_SHORT[RTB_ROUNDS] = {
     "red/black", "higher/lower", "inside/outside", "suit"
 };
-
-typedef enum {
-    RTB_RED_BLACK, RTB_HIGH_LOW, RTB_INSIDE_OUTSIDE, RTB_SUIT, RTB_COMPLETE
-} rtb_stage_t;
-
-typedef enum { RTB_LOSS, RTB_CASHOUT, RTB_BUS } rtb_outcome_t;
 
 /* ---- pure rules (exercised directly by the `check` self-test) ---------- */
 
@@ -271,20 +265,113 @@ static int agent_choose(rtb_agent_t *ag, const rtb_opt_t *opts, int nopts,
     }
 }
 
-/* ---- game state -------------------------------------------------------- */
+/* ---- game state (rtb_game_t and the API live in ridethebus.h) ---------- */
 
-/* Every round resolves on the card it deals, so there is exactly one
- * card per round played. */
-typedef struct {
-    long          bet;
-    long          payout;
-    int           rounds_won;
-    rtb_outcome_t outcome;
-    bool          walked;               /* EOF before finishing */
-    card_t        cards[RTB_ROUNDS];    /* one card per round played */
-    int           ncards;
-    int           guess[RTB_ROUNDS];
-} rtb_game_t;
+void rtb_front_start(rtb_game_t *g, long bet, rng_t *rng)
+{
+    memset(g, 0, sizeof *g);
+    g->bet = bet;
+    g->outcome = RTB_LOSS;
+    shoe_init(&g->shoe, 1);
+    shoe_shuffle(&g->shoe, rng);
+}
+
+rtb_stage_t rtb_front_stage(const rtb_game_t *g)
+{
+    return g->rounds_won >= RTB_ROUNDS ? RTB_COMPLETE
+                                       : (rtb_stage_t)g->rounds_won;
+}
+
+bool rtb_front_over(const rtb_game_t *g)
+{
+    return g->over;
+}
+
+/* Nothing to cash before round 1 is won. */
+bool rtb_front_can_cash(const rtb_game_t *g)
+{
+    return !g->over && g->rounds_won > 0;
+}
+
+int rtb_front_nchoices(rtb_stage_t st)
+{
+    return st == RTB_SUIT ? 4 : 2;
+}
+
+/*
+ * One round: deal its card and resolve it.  Ties go to HIGHER and
+ * boundaries go to INSIDE, so every card resolves its own round and
+ * nothing is ever re-drawn.  This is the only place a round is judged.
+ */
+bool rtb_front_guess(rtb_game_t *g, int guess)
+{
+    rtb_stage_t st = rtb_front_stage(g);
+    card_t c;
+    bool correct;
+
+    if (g->over || st == RTB_COMPLETE)
+        return false;
+
+    c = shoe_draw(&g->shoe);
+    g->guess[g->ncards] = guess;
+    g->cards[g->ncards++] = c;
+
+    switch (st) {
+    case RTB_HIGH_LOW:
+        correct = rtb_higher_wins(g->cards[0], c) == (guess == 0);
+        break;
+    case RTB_INSIDE_OUTSIDE:
+        correct = guess == 0
+                      ? rtb_is_inside(g->cards[0], g->cards[1], c)
+                      : rtb_is_outside(g->cards[0], g->cards[1], c);
+        break;
+    case RTB_SUIT:
+        correct = rtb_suit_matches(c, guess);
+        break;
+    default:
+        correct = (guess == 0) == rtb_is_red(c);
+        break;
+    }
+
+    if (!correct) {
+        g->payout = 0;
+        g->outcome = RTB_LOSS;
+        g->over = true;
+        return false;
+    }
+
+    g->rounds_won = (int)st + 1;
+    g->payout = g->bet * RTB_MULT[st];
+    if (g->rounds_won == RTB_ROUNDS) {
+        g->outcome = RTB_BUS;
+        g->over = true;
+    }
+    return true;
+}
+
+void rtb_front_cash_out(rtb_game_t *g)
+{
+    g->outcome = RTB_CASHOUT;
+    g->over = true;
+}
+
+void rtb_front_range(const rtb_game_t *g, card_t *lo, card_t *hi)
+{
+    bool first_low = rtb_compare_rank(g->cards[0], g->cards[1]) < 0;
+
+    *lo = first_low ? g->cards[0] : g->cards[1];
+    *hi = first_low ? g->cards[1] : g->cards[0];
+}
+
+const char *rtb_front_stage_title(rtb_stage_t st)
+{
+    return st < RTB_COMPLETE ? ROUND_TITLE[st] : "COMPLETE";
+}
+
+const char *rtb_front_guess_word(rtb_stage_t st, int guess)
+{
+    return guess_word(st, guess);
+}
 
 /* ---- display (reuses cardart; no card art is defined here) ------------- */
 
@@ -314,9 +401,10 @@ static void print_prompt(FILE *f, rtb_stage_t st, const rtb_game_t *g)
         fprintf(f, "Current card: %s\n\n", a);
         break;
     case RTB_INSIDE_OUTSIDE: {
-        bool first_low = rtb_compare_rank(g->cards[0], g->cards[1]) < 0;
-        card_name(first_low ? g->cards[0] : g->cards[1], a, sizeof a);
-        card_name(first_low ? g->cards[1] : g->cards[0], b, sizeof b);
+        card_t lo, hi;
+        rtb_front_range(g, &lo, &hi);
+        card_name(lo, a, sizeof a);
+        card_name(hi, b, sizeof b);
         fprintf(f, "Range: %s - %s\n\n", a, b);
         break;
     }
@@ -354,16 +442,10 @@ static void print_prompt(FILE *f, rtb_stage_t st, const rtb_game_t *g)
  */
 static int play_game(rtb_agent_t *ag, rng_t *rng, long bet, rtb_game_t *g)
 {
-    shoe_t shoe;
     FILE  *f = ag->disp;
     bool   show = ag->display;
 
-    shoe_init(&shoe, 1);
-    shoe_shuffle(&shoe, rng);
-
-    memset(g, 0, sizeof *g);
-    g->bet = bet;
-    g->outcome = RTB_LOSS;
+    rtb_front_start(g, bet, rng);
 
     for (int round = 0; round < RTB_ROUNDS; round++) {
         rtb_stage_t st = (rtb_stage_t)round;
@@ -380,37 +462,16 @@ static int play_game(rtb_agent_t *ag, rng_t *rng, long bet, rtb_game_t *g)
             /* EOF: take the money if any has been won, else no bet. */
             g->walked = true;
             if (allow_cash)
-                g->outcome = RTB_CASHOUT;
+                rtb_front_cash_out(g);
             return 0;
         }
         if (guess == RTB_CASH) {
-            g->outcome = RTB_CASHOUT;
+            rtb_front_cash_out(g);
             return 0;
         }
-        g->guess[round] = guess;
 
-        /* One card, one resolution: ties go to HIGHER and boundaries go
-         * to INSIDE, so no draw is ever repeated. */
-        card_t c = shoe_draw(&shoe);
-        bool correct;
-
-        g->cards[g->ncards++] = c;
-        switch (st) {
-        case RTB_HIGH_LOW:
-            correct = rtb_higher_wins(g->cards[0], c) == (guess == 0);
-            break;
-        case RTB_INSIDE_OUTSIDE:
-            correct = guess == 0
-                          ? rtb_is_inside(g->cards[0], g->cards[1], c)
-                          : rtb_is_outside(g->cards[0], g->cards[1], c);
-            break;
-        case RTB_SUIT:
-            correct = rtb_suit_matches(c, guess);
-            break;
-        default:
-            correct = (guess == 0) == rtb_is_red(c);
-            break;
-        }
+        /* One card, one resolution, judged by the engine's own rules. */
+        bool correct = rtb_front_guess(g, guess);
 
         if (show) {
             fprintf(f, "\n");
@@ -418,21 +479,16 @@ static int play_game(rtb_agent_t *ag, rng_t *rng, long bet, rtb_game_t *g)
         }
 
         if (!correct) {
-            g->payout = 0;
-            g->outcome = RTB_LOSS;
             if (show)
                 fprintf(f, "\nWrong! You lose your bet of %ld.\n", g->bet);
             return 0;
         }
 
-        g->rounds_won = round + 1;
-        g->payout = bet * RTB_MULT[round];
         if (show)
             fprintf(f, "\nCorrect!\n\nCurrent payout: %ld\n", g->payout);
     }
 
-    g->outcome = RTB_BUS;
-    return 0;
+    return 0;                   /* the fourth win already set RTB_BUS */
 }
 
 /* ---- result reporting --------------------------------------------------- */
@@ -687,6 +743,22 @@ int ridethebus_run(const cli_t *cli, rng_t *rng)
     int  cashout_after;
     bool check;
 
+    if (cli->gui) {
+        if (cli->nbets != 0 || cli->quiet || cli->json || cli->stats ||
+            cli->trainer || cli->iterations != 1) {
+            fprintf(stderr, "ridethebus: --gui takes no other arguments "
+                            "(only --seed)\n");
+            return 2;
+        }
+#ifdef CASINO_GUI
+        return rtb_gui_run(rng);
+#else
+        fprintf(stderr, "ridethebus: this build has no GUI support "
+                        "(install raylib and run make again)\n");
+        return 2;
+#endif
+    }
+
     if (parse_args(cli, &sc, &bet, &cashout_after, &check))
         return 2;
     if (check)
@@ -842,5 +914,6 @@ void ridethebus_list_bets(void)
     puts("  ridethebus r,h,o,s         scripted: try all four rounds");
     puts("  ridethebus r,h,x           scripted: cash out after round 2");
     puts("  ridethebus --runs 100000   simulate with random guesses");
+    puts("  ridethebus --gui           graphical table (raylib builds)");
     puts("results: BUS (all four rounds) | CASHOUT | LOSS");
 }
