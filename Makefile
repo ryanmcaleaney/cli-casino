@@ -33,7 +33,7 @@ endif
 OBJ   := $(patsubst src/%.c,build/%.o,$(SRC))
 BIN   := casino
 LINKS := roulette coin dice sicbo baccarat blackjack craps slots \
-         videopoker ridethebus war threecard chuckaluck bigsix
+         videopoker ridethebus war threecard letitride chuckaluck bigsix
 
 all: $(BIN)
 

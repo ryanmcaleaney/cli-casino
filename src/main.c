@@ -13,10 +13,13 @@
 #include "games/coin.h"
 #include "games/craps.h"
 #include "games/gdice.h"
+#include "games/letitride.h"
 #include "games/ridethebus.h"
 #include "games/roulette.h"
 #include "games/slots.h"
+#include "games/threecard.h"
 #include "games/videopoker.h"
+#include "games/war.h"
 
 const game_t GAMES[] = {
     { "roulette",  "European roulette",       roulette_run, roulette_list_bets },
@@ -33,8 +36,14 @@ const game_t GAMES[] = {
     { "ridethebus","four-stage red/black, high/low, inside/outside, suit",
                                                   ridethebus_run,
                                                   ridethebus_list_bets },
-    { "war",       "casino war (planned)",    NULL, NULL },
-    { "threecard", "three-card poker (planned)", NULL, NULL },
+    { "war",       "casino war (6-deck shoe, war or surrender on a tie)",
+                                                  war_run, war_list_bets },
+    { "threecard", "three-card poker (ante/play, ante bonus, pair plus)",
+                                                  threecard_run,
+                                                  threecard_list_bets },
+    { "letitride", "let it ride (three wagers, tens or better)",
+                                                  letitride_run,
+                                                  letitride_list_bets },
     { "chuckaluck","chuck-a-luck (planned)",  NULL, NULL },
     { "bigsix",    "big six wheel (planned)", NULL, NULL },
 };
@@ -65,7 +74,7 @@ static void global_usage(FILE *f)
         "  --runs N        shorthand for --iterations N --stats\n"
         "  --trainer       interactive strategy trainer (videopoker only)\n"
         "  --gui           graphical frontend (videopoker, baccarat,\n"
-        "                  blackjack, ridethebus)\n"
+        "                  blackjack, ridethebus, threecard, letitride)\n"
         "  --optimal       GUI strategy training mode "
         "(videopoker --gui only)\n"
         "  --counting      GUI Hi-Lo counting trainer "
@@ -153,10 +162,12 @@ int main(int argc, char **argv)
     if (cli.gui && strcmp(game->name, "videopoker") != 0 &&
         strcmp(game->name, "baccarat") != 0 &&
         strcmp(game->name, "blackjack") != 0 &&
-        strcmp(game->name, "ridethebus") != 0) {
+        strcmp(game->name, "ridethebus") != 0 &&
+        strcmp(game->name, "threecard") != 0 &&
+        strcmp(game->name, "letitride") != 0) {
         fprintf(stderr, "%s: --gui is not available for this game "
-                        "(try videopoker, baccarat, blackjack or "
-                        "ridethebus)\n", game->name);
+                        "(try videopoker, baccarat, blackjack, ridethebus, "
+                        "threecard or letitride)\n", game->name);
         return 2;
     }
 

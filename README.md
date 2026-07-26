@@ -105,6 +105,9 @@ Games can be selected as the first argument to `casino`:
 ./casino dice --seed 1 2d6 total:7
 ./casino baccarat --seed 1 player
 ./casino blackjack --seed 1 hit stand
+./casino war --seed 17 war
+./casino threecard --seed 1 ante:25 pairplus:5 play
+./casino letitride --seed 3 bet:25 ride,ride
 ```
 
 After running `make symlinks` or installing the project, each game can also be
@@ -129,16 +132,38 @@ Useful options:
 interactively when no actions are supplied. It uses a six-deck shoe with the
 dealer standing on soft 17.
 
+`threecard` deals three cards each from a single deck. After seeing the hand
+the player takes `play` (a second wager equal to the ante) or `fold`; the
+dealer qualifies with queen-high or better. A straight beats a flush with
+only three cards. An ante bonus rides on any played hand and the optional
+`pairplus:N` side bet pays on the player's own cards even after a fold.
+Simulation with `--runs` requires a scripted `play` or `fold`.
+
+`letitride` deals three cards to the player and two community cards from a
+single deck. Three equal wagers go up at the start (`bet:25` commits 75);
+the player may pull bet 1 after seeing three cards and bet 2 after the
+first community card, while bet 3 always rides. Every wager still riding
+is paid separately from a tens-or-better pay table. A pulled wager is
+returned and never counts as gambled. Simulation with `--runs` requires
+scripted decisions such as `ride,ride` or `pull,ride`.
+
+`war` deals one card each from a six-deck shoe, ace high. A tie is resolved
+with `war` (match the wager, burn three cards, one more card each) or
+`surrender` (lose half the wager); supplying neither prompts interactively.
+Simulation with `--runs` requires one of the two scripted tie strategies.
+
 ## Graphical games
 
 Raylib builds provide graphical frontends for video poker, baccarat,
-blackjack, and Ride the Bus:
+blackjack, Ride the Bus, three card poker, and Let It Ride:
 
 ```sh
 casino videopoker --gui
 casino baccarat --gui
 casino blackjack --gui
 casino ridethebus --gui
+casino threecard --gui
+casino letitride --gui
 ```
 
 Video poker also has a terminal trainer and a graphical optimal-play mode.
@@ -163,9 +188,12 @@ Implemented:
 - Three-reel slots
 - Jacks or Better video poker
 - Ride the Bus
+- Casino War
+- Three Card Poker
+- Let It Ride
 
-Sic bo, casino war, three-card poker, chuck-a-luck, and big six are currently
-placeholders and report that they are not implemented.
+Sic bo, chuck-a-luck, and big six are currently placeholders and report
+that they are not implemented.
 
 ## Project layout
 

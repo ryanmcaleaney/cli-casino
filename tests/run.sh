@@ -804,7 +804,7 @@ expect_exit "roulette counting rejected" 2 $C roulette --counting
 expect_grep "counting in global help"  "counting.*Hi-Lo" $C blackjack --help
 # missing assets (or a CLI-only build) must fail cleanly, never crash
 root=$PWD
-for g in videopoker baccarat blackjack ridethebus; do
+for g in videopoker baccarat blackjack ridethebus threecard letitride; do
     out=$(cd /tmp && "$root/casino" $g --gui 2>&1)
     case "$out" in
     *"missing asset"*|*"no GUI support"*) ok ;;
@@ -987,6 +987,784 @@ if ${CC:-cc} -std=c11 -Isrc -o build/rtb_front_test tests/rtb_front.c \
     expect_exit "rtb frontend session checks" 0 ./build/rtb_front_test
 else
     bad "rtb frontend test did not build"
+fi
+
+# --- casino war (6-deck shoe, ace high, war or surrender on a tie) --------
+# registered rather than planned
+expect_grep "war in game list" "^  war  *casino war (6-deck" $C --help
+expect_grep "war list-bets"    "casino war: one card each" $C war --list-bets
+expect_grep "war help works"   "usage:"                    $C war --help
+
+# plain rounds: higher rank wins 1:1, lower rank loses the wager
+expect_exit "war plain round"  0 $C war war --seed 1
+expect_grep "war win pays 1:1" \
+    "^WIN player=Qh dealer=5d wagered=100 returned=200 net=+100$" \
+    $C war war --seed 1 --quiet
+expect_grep "war loss keeps nothing" \
+    "^LOSS player=2c dealer=As wagered=100 returned=0 net=-100$" \
+    $C war war --seed 5 --quiet
+# ace is high, suits are irrelevant
+expect_grep "war ace beats king" "^WIN player=As dealer=Kh " \
+    $C war war --seed 38 --quiet
+expect_grep "war ace beats jack" "^LOSS player=Jh dealer=Ah " \
+    $C war war --seed 71 --quiet
+
+# scripted war: match the wager, burn three, one more card each
+expect_grep "war scripted war loses both" \
+    "^LOSS player=Ks dealer=Kh tie=war war_player=9s war_dealer=Js second_tie=no wagered=200 returned=0 net=-200$" \
+    $C war war --seed 17 --quiet
+expect_grep "war scripted war wins raise" \
+    "^WIN player=2s dealer=2d tie=war war_player=5c war_dealer=4d second_tie=no wagered=200 returned=300 net=+100$" \
+    $C war war --seed 56 --quiet
+# a second tie pushes the war wager and returns both wagers
+expect_grep "war second tie pushes" \
+    "^PUSH player=5h dealer=5c tie=war war_player=9d war_dealer=9d second_tie=yes wagered=200 returned=200 net=+0$" \
+    $C war war --seed 230 --quiet
+expect_grep "war burns three cards" '"burn":\["5c","7h","10d"\]' \
+    $C war war --seed 230 --json
+
+# scripted surrender: half the original wager, no extra money at risk
+expect_grep "war surrender loses half" \
+    "^SURRENDER player=7s dealer=7s tie=surrender wagered=100 returned=50 net=-50$" \
+    $C war surrender --seed 7 --quiet
+# half-unit accounting stays exact on an odd wager
+expect_grep "war surrender half is exact" \
+    "^SURRENDER player=7s dealer=7s tie=surrender wagered=25 returned=12.5 net=-12.5$" \
+    $C war surrender bet:25 --seed 7 --quiet
+expect_grep "war surrender half in json" '"returned":12.5,"net":-12.5' \
+    $C war surrender bet:25 --seed 7 --json
+# the same tie resolves either way, from the same cards
+expect_grep "war strategies share the tie" "player=7s dealer=7s tie=war" \
+    $C war war --seed 7 --quiet
+
+# bet size scales the whole round
+expect_grep "war bet size honoured" \
+    "^WIN player=Qh dealer=5d wagered=250 returned=500 net=+250$" \
+    $C war bet:250 war --seed 1 --quiet
+
+# output modes
+expect_grep "war json game key" '"game":"war"'      $C war war --seed 1 --json
+expect_grep "war json no tie"   '"tie":false,"decision":null' \
+    $C war war --seed 1 --json
+expect_grep "war json tie keys" '"tie":true,"decision":"war"' \
+    $C war war --seed 17 --json
+expect_grep "war normal shows cards" "^Player: Ks$"  $C war war --seed 17
+expect_grep "war normal shows dealer" "^Dealer: Kh$" $C war war --seed 17
+expect_grep "war normal shows tie"   "^TIE!$"        $C war war --seed 17
+expect_grep "war normal echoes choice" "^> war$"     $C war war --seed 17
+expect_grep "war normal shows war"   "^WAR!$"        $C war war --seed 17
+expect_grep "war normal shows result" "^Result:   LOSS$" $C war war --seed 17
+expect_grep "war normal shows net"   "^Net:          -200$" $C war war --seed 17
+expect_grep "war art cards" "┌─────────┐" \
+    env CASINO_CARDS=art $C war war --seed 56
+
+a=$($C war war --seed 42 --json)
+b=$($C war war --seed 42 --json)
+[ "$a" = "$b" ] && ok || bad "war seeded runs identical"
+n=$($C war war --seed 3 --iterations 5 --quiet | wc -l)
+[ "$n" -eq 5 ] && ok || bad "war iterations produce 5 lines (got $n)"
+
+# interactive: the tie prompt is offered, choices are consumed, EOF concedes
+expect_grep "war prompts on a tie" "\[w\]ar / \[s\]urrender" \
+    sh -c "printf 'w\n' | $C war --seed 17"
+expect_grep "war interactive war" "^Wagered:       200$" \
+    sh -c "printf 'war\n' | $C war --seed 17"
+expect_grep "war interactive surrender" "^Result:   SURRENDER$" \
+    sh -c "printf 's\n' | $C war --seed 17"
+expect_grep "war reprompts on bad input" "invalid choice" \
+    sh -c "printf 'zzz\ns\n' | $C war --seed 17"
+expect_grep "war EOF concedes the tie" "^Result:   SURRENDER$" \
+    sh -c "$C war --seed 17 </dev/null"
+expect_exit "war interactive EOF"  0 sh -c "$C war --seed 17 </dev/null"
+# no tie, no prompt
+expect_exit "war interactive no tie" 0 sh -c "$C war --seed 1 </dev/null"
+
+# validation
+expect_exit "war unknown argument"   2 $C war banana
+expect_exit "war two strategies"     2 $C war war surrender
+expect_exit "war strategy with value" 2 $C war war:1
+expect_exit "war bet zero"           2 $C war war bet:0
+expect_exit "war bet negative"       2 $C war war bet:-5
+expect_exit "war bet malformed"      2 $C war war bet:x
+expect_exit "war unknown option"     2 $C war war --nope
+expect_exit "war gui refused"        2 $C war war --gui
+
+# simulation needs a scripted tie strategy
+expect_exit "war runs needs strategy" 2 $C war --runs 10
+expect_exit "war stats needs strategy" 2 $C war --stats --iterations 10
+expect_exit "war runs war ok"        0 $C war war --runs 10 --seed 1
+expect_exit "war runs surrender ok"  0 $C war surrender --runs 10 --seed 1
+expect_grep "war runs table"    "second ties" $C war war --runs 100 --seed 1
+expect_grep "war runs json"     '"strategy":"war"' \
+    $C war war --runs 100 --seed 1 --json
+expect_grep "war runs quiet"    "^runs=100 bet=100 strategy=surrender " \
+    $C war surrender --runs 100 --seed 1 --quiet
+n=$($C war war --runs 1000 --seed 1 --quiet | wc -l)
+[ "$n" -eq 1 ] && ok || bad "war runs quiet is a single line (got $n)"
+n=$($C war war --runs 1000 --seed 1 --json | wc -l)
+[ "$n" -eq 1 ] && ok || bad "war runs json is a single line (got $n)"
+
+# accounting: counters partition the rounds and the money adds up exactly,
+# including the extra war wager
+$C war war --runs 20000 --seed 3 --json | awk '
+{
+  n = split($0, f, /[{},]/)
+  for (i = 1; i <= n; i++) {
+    split(f[i], kv, ":")
+    gsub(/"/, "", kv[1]); sub(/\.0$/, "", kv[2])
+    v[kv[1]] = kv[2]
+  }
+  bet = 100
+  paid = (v["player_wins"] * 2 + v["war_wins"] * 3 + v["second_ties"] * 2) * bet
+  ok = v["rounds"] == 20000 &&
+       v["player_wins"] + v["dealer_wins"] + v["ties"] == v["rounds"] &&
+       v["wars"] + v["surrenders"] == v["ties"] &&
+       v["war_wins"] + v["war_losses"] + v["second_ties"] == v["wars"] &&
+       v["surrenders"] == 0 &&
+       v["wagered"] == (v["rounds"] + v["wars"]) * bet &&
+       v["returned"] == paid &&
+       v["net"] == v["returned"] - v["wagered"]
+  print (ok ? "WAR_OK" : "WAR_BAD")
+}' | grep -q WAR_OK && ok || bad "war accounting adds up (war strategy)"
+
+$C war surrender --runs 20000 --seed 3 --json | awk '
+{
+  n = split($0, f, /[{},]/)
+  for (i = 1; i <= n; i++) {
+    split(f[i], kv, ":")
+    gsub(/"/, "", kv[1]); sub(/\.0$/, "", kv[2])
+    v[kv[1]] = kv[2]
+  }
+  bet = 100
+  ok = v["wars"] == 0 && v["second_ties"] == 0 &&
+       v["surrenders"] == v["ties"] &&
+       v["wagered"] == v["rounds"] * bet &&
+       v["returned"] == v["player_wins"] * 2 * bet + v["ties"] * bet / 2 &&
+       v["net"] == v["returned"] - v["wagered"]
+  print (ok ? "SUR_OK" : "SUR_BAD")
+}' | grep -q SUR_OK && ok || bad "war accounting adds up (surrender strategy)"
+
+# both strategies see the same deal, so the tie counts must match
+tw=$($C war war --runs 20000 --seed 3 --json |
+     sed 's/.*"ties":\([0-9]*\).*/\1/')
+ts=$($C war surrender --runs 20000 --seed 3 --json |
+     sed 's/.*"ties":\([0-9]*\).*/\1/')
+[ "$tw" = "$ts" ] && ok || bad "war tie count is strategy independent"
+# sanity: a 6-deck tie happens 23/311 ~ 7.4% of the time
+[ "$tw" -gt 1300 ] && [ "$tw" -lt 1660 ] && ok || \
+    bad "war tie rate plausible (got $tw / 20000)"
+
+ln -sf casino war
+expect_grep "war symlink invocation" '"game":"war"' \
+    sh -c "./war war --seed 17 --json"
+rm -f war
+
+# --- three card poker (ante/play, ante bonus, pair plus) ------------------
+# registered rather than planned
+expect_grep "tc in game list" "^  threecard  *three-card poker (ante/play" \
+    $C --help
+expect_grep "tc list-bets"    "three card poker: three cards each" \
+    $C threecard --list-bets
+expect_grep "tc help works"   "usage:"  $C threecard --help
+# the pay tables in the help text are read from the engine
+expect_grep "tc lists ante bonus"  "^  Straight          1:1$" \
+    $C threecard --list-bets
+expect_grep "tc lists trips bonus" "^  Three of a Kind   4:1$" \
+    $C threecard --list-bets
+expect_grep "tc lists sf bonus"    "^  Straight Flush    5:1$" \
+    $C threecard --list-bets
+expect_grep "tc lists pairplus 30" "^  Three of a Kind  30:1$" \
+    $C threecard --list-bets
+expect_grep "tc lists pairplus 40" "^  Straight Flush   40:1$" \
+    $C threecard --list-bets
+
+# pure rule predicates (self-test, no RNG involved)
+expect_exit "tc rule self-test passes" 0 $C threecard check
+expect_grep "tc check no failures" "check: 48 passed, 0 failed" \
+    $C threecard check
+# dealer qualification: queen-high or better
+expect_grep "tc Q-high qualifies"  "^qualify Q-high  *qualifies " \
+    $C threecard check
+expect_grep "tc J-high does not"   "^qualify J-high  *no " \
+    $C threecard check
+expect_grep "tc low pair qualifies" "^qualify low pair  *qualifies " \
+    $C threecard check
+# ace is high, except in the lowest straight
+expect_grep "tc A-2-3 is a straight" "^cat A-2-3 straight  *straight " \
+    $C threecard check
+expect_grep "tc Q-K-A is a straight" "^cat Q-K-A straight  *straight " \
+    $C threecard check
+expect_grep "tc K-A-2 is not"        "^cat K-A-2 not straight  *high_card " \
+    $C threecard check
+expect_grep "tc A-2-3 ranks lowest"  "^A-2-3 is the low straight  *lower " \
+    $C threecard check
+expect_grep "tc Q-K-A ranks highest" "^Q-K-A is the high straight  *higher " \
+    $C threecard check
+# the three-card order, which is not the five-card order
+expect_grep "tc straight beats flush" "^straight beats flush  *higher " \
+    $C threecard check
+expect_grep "tc trips beats straight" "^trips beats straight  *higher " \
+    $C threecard check
+expect_grep "tc sf beats trips"       "^sf beats trips  *higher " \
+    $C threecard check
+expect_grep "tc flush beats pair"     "^flush beats pair  *higher " \
+    $C threecard check
+# equal categories compare on rank
+expect_grep "tc pair kicker"      "^pair kicker higher  *higher " \
+    $C threecard check
+expect_grep "tc pair rank first"  "^pair rank beats kicker  *higher " \
+    $C threecard check
+expect_grep "tc high card third"  "^high card third  *higher " \
+    $C threecard check
+expect_grep "tc flush ranks"      "^flush ranks  *higher " \
+    $C threecard check
+expect_grep "tc equal hands push" "^equal hands push  *equal " \
+    $C threecard check
+
+# fixed deals: settlement edge cases, no RNG involved
+# folding loses the ante and nothing else
+expect_grep "tc fold loses ante" \
+    "^FOLD player=2h,7d,9c hand=high_card action=fold .* ante=-25 play=0 bonus=0 wagered=25 returned=0 net=-25$" \
+    $C threecard deal:2h,7d,9c,as,kd,qh fold --quiet
+# pair plus resolves even after a fold
+expect_grep "tc pairplus pays after fold" "pairplus=+5 wagered=30 returned=10 net=-20$" \
+    $C threecard deal:9h,9d,2c,as,kd,qh pairplus:5 fold --quiet
+expect_grep "tc pairplus lost after fold" "pairplus=-5 wagered=30 returned=0 net=-30$" \
+    $C threecard deal:2h,7d,9c,as,kd,qh pairplus:5 fold --quiet
+# the ante bonus needs a played hand
+expect_grep "tc no bonus after fold" "bonus=0 wagered=25 returned=0 net=-25$" \
+    $C threecard deal:2h,3d,4c,as,kd,qh fold --quiet
+# ... and is paid on a played hand even when the dealer wins
+expect_grep "tc bonus paid on a loss" \
+    "^LOSS .* ante=-25 play=-25 bonus=+25 wagered=50 returned=25 net=-25$" \
+    $C threecard deal:2h,3d,4c,5s,6d,7h play --quiet
+expect_grep "tc bonus trips 4:1" "bonus=+100 " \
+    $C threecard deal:2h,2d,2c,as,kd,9h play --quiet
+expect_grep "tc bonus sf 5:1"    "bonus=+125 " \
+    $C threecard deal:2h,3h,4h,as,kd,9c play --quiet
+# a non-qualifying dealer pays the ante and pushes the play
+expect_grep "tc no qualify pays ante" \
+    "^NOQUALIFY .* qualifies=no ante=+25 play=0 bonus=0 wagered=50 returned=75 net=+25$" \
+    $C threecard deal:2h,7d,9c,js,8d,4h play --quiet
+# ... even when the dealer's cards would have won
+expect_grep "tc no qualify beats better" "^NOQUALIFY .* net=+25$" \
+    $C threecard deal:2h,3d,5c,js,9d,4h play --quiet
+# a qualifying dealer is compared
+expect_grep "tc play beats dealer" \
+    "^WIN .* ante=+25 play=+25 bonus=0 wagered=50 returned=100 net=+50$" \
+    $C threecard deal:ah,ad,2c,qs,9d,4h play --quiet
+expect_grep "tc play loses to dealer" \
+    "^LOSS .* ante=-25 play=-25 bonus=0 wagered=50 returned=0 net=-50$" \
+    $C threecard deal:2h,7d,9c,as,kd,qh play --quiet
+expect_grep "tc equal hands push both" \
+    "^PUSH .* ante=0 play=0 bonus=0 wagered=50 returned=50 net=0$" \
+    $C threecard deal:ah,qd,9c,as,qc,9d play --quiet
+# the whole pair plus pay table
+expect_grep "tc pairplus pair 1:1"     "pairplus=+5 "   \
+    $C threecard deal:9h,9d,2c,as,kd,qh pairplus:5 play --quiet
+expect_grep "tc pairplus flush 4:1"    "pairplus=+20 "  \
+    $C threecard deal:2h,7h,jh,as,kd,qc pairplus:5 play --quiet
+expect_grep "tc pairplus straight 6:1" "pairplus=+30 "  \
+    $C threecard deal:2h,3d,4c,as,kd,qh pairplus:5 play --quiet
+expect_grep "tc pairplus trips 30:1"   "pairplus=+150 " \
+    $C threecard deal:2h,2d,2c,as,kd,qh pairplus:5 play --quiet
+expect_grep "tc pairplus sf 40:1"      "pairplus=+200 " \
+    $C threecard deal:2h,3h,4h,as,kd,qc pairplus:5 play --quiet
+# a bigger ante scales every payout on the hand
+expect_grep "tc ante scales the round" \
+    "ante=+50 play=+50 bonus=+250 wagered=100 returned=450 net=+350$" \
+    $C threecard ante:50 deal:2h,3h,4h,as,kd,9c play --quiet
+
+# seeded deals
+expect_grep "tc seeded no qualify" \
+    "^NOQUALIFY player=Kd,7c,Jc hand=high_card action=play dealer=6h,5c,Js dhand=high_card qualifies=no " \
+    $C threecard play --seed 1 --quiet
+expect_grep "tc seeded Q-high qualifies" "dealer=Jc,Qd,4s dhand=high_card qualifies=yes" \
+    $C threecard play --seed 11 --quiet
+expect_grep "tc seeded fold" "^FOLD .* action=fold .* net=-25$" \
+    $C threecard fold --seed 1 --quiet
+expect_grep "tc seeded ante bonus" \
+    "^WIN player=10h,9c,Jh hand=straight .* bonus=+25 .* net=+75$" \
+    $C threecard play --seed 16 --quiet
+expect_grep "tc seeded trips bonus and pairplus" \
+    "^WIN player=Kc,Kd,Kh hand=three_of_a_kind .* bonus=+100 pairplus=+150 wagered=55 returned=355 net=+300$" \
+    $C threecard pairplus:5 play --seed 373 --quiet
+# pair plus can win on a hand that loses the ante and play
+expect_grep "tc pairplus wins on a loss" \
+    "^LOSS .* ante=-25 play=-25 bonus=0 pairplus=+5 wagered=55 returned=10 net=-45$" \
+    $C threecard pairplus:5 play --seed 410 --quiet
+
+a=$($C threecard play --seed 42 --json)
+b=$($C threecard play --seed 42 --json)
+[ "$a" = "$b" ] && ok || bad "tc seeded runs identical"
+n=$($C threecard play --seed 3 --iterations 5 --quiet | wc -l)
+[ "$n" -eq 5 ] && ok || bad "tc iterations produce 5 lines (got $n)"
+
+# output modes
+expect_grep "tc json game key"  '"game":"threecard"' \
+    $C threecard play --seed 1 --json
+expect_grep "tc json player"    '"player":{"cards":\["Kd","7c","Jc"\],"category":"high_card"}' \
+    $C threecard play --seed 1 --json
+expect_grep "tc json dealer"    '"dealer":{"cards":\["6h","5c","Js"\],"category":"high_card"}' \
+    $C threecard play --seed 1 --json
+expect_grep "tc json qualifies" '"dealer_qualifies":false,"outcome":"no_qualify"' \
+    $C threecard play --seed 1 --json
+expect_grep "tc json settlement" '"ante_net":25,"play_net":0,"ante_bonus":0' \
+    $C threecard play --seed 1 --json
+expect_grep "tc json pairplus"  '"pairplus_net":150' \
+    $C threecard pairplus:5 play --seed 373 --json
+# the JSON round object has no duplicate keys
+n=$($C threecard pairplus:5 play --seed 1 --json |
+    tr ',' '\n' | grep -c '"ante":')
+[ "$n" -eq 1 ] && ok || bad "tc json ante key appears once (got $n)"
+# normal output shows the whole hand, both categories and the breakdown
+expect_grep "tc normal shows player"  "^Player:  Kd 7c Jc$" \
+    $C threecard play --seed 1
+expect_grep "tc normal shows category" "^Hand:    High Card$" \
+    $C threecard play --seed 1
+expect_grep "tc normal echoes choice" "^> play$"  $C threecard play --seed 1
+expect_grep "tc normal shows dealer"  "^Dealer:  6h 5c Js$" \
+    $C threecard play --seed 1
+expect_grep "tc normal shows qualify" "^Qualify: no (below queen-high)$" \
+    $C threecard play --seed 1
+expect_grep "tc normal shows result"  "^Result:      NO QUALIFY$" \
+    $C threecard play --seed 1
+expect_grep "tc normal shows bonus"   "^Ante bonus:         0$" \
+    $C threecard play --seed 1
+expect_grep "tc normal shows net"     "^Net:              +25$" \
+    $C threecard play --seed 1
+expect_grep "tc normal shows pairplus" "^Pair Plus:       +150$" \
+    $C threecard pairplus:5 play --seed 373
+expect_grep "tc art cards" "┌─────────┐" \
+    env CASINO_CARDS=art $C threecard play --seed 1
+
+# interactive: the dealer stays down until the decision is made
+expect_grep "tc prompts for a decision" "\[p\]lay / \[f\]old" \
+    sh -c "printf 'p\n' | $C threecard --seed 1"
+expect_grep "tc interactive play" "^Result:      NO QUALIFY$" \
+    sh -c "printf 'play\n' | $C threecard --seed 1"
+expect_grep "tc interactive fold" "^Result:      FOLD$" \
+    sh -c "printf 'f\n' | $C threecard --seed 1"
+expect_grep "tc reprompts on bad input" "invalid choice" \
+    sh -c "printf 'zzz\nf\n' | $C threecard --seed 1"
+expect_grep "tc EOF folds" "^Result:      FOLD$" \
+    sh -c "$C threecard --seed 1 </dev/null"
+expect_exit "tc interactive EOF" 0 sh -c "$C threecard --seed 1 </dev/null"
+# the dealer's cards are never printed before the prompt
+$C threecard play --seed 1 | awk '
+/^\[p\]play|^\[p\]lay/ { seen_prompt = 1 }
+/^Dealer:/ { if (!seen_prompt) early = 1 }
+END { print (early ? "EARLY" : "HIDDEN") }' | grep -q HIDDEN && ok || \
+    bad "tc dealer stays hidden until the decision"
+
+# validation
+expect_exit "tc unknown argument"  2 $C threecard banana
+expect_exit "tc two actions"       2 $C threecard play fold
+expect_exit "tc action with value" 2 $C threecard play:1
+expect_exit "tc ante zero"         2 $C threecard play ante:0
+expect_exit "tc ante negative"     2 $C threecard play ante:-5
+expect_exit "tc ante too big"      2 $C threecard play ante:100000
+expect_exit "tc ante malformed"    2 $C threecard play ante:x
+expect_exit "tc pairplus negative" 2 $C threecard play pairplus:-1
+expect_exit "tc pairplus malformed" 2 $C threecard play pairplus:x
+expect_exit "tc pairplus zero ok"  0 $C threecard play pairplus:0 --seed 1
+expect_exit "tc deal too few"      2 $C threecard play deal:2h,3h,4h
+expect_exit "tc deal duplicate"    2 $C threecard play deal:2h,3h,4h,2h,kd,qc
+expect_exit "tc deal bad card"     2 $C threecard play deal:2x,3h,4h,as,kd,qc
+expect_exit "tc deal cannot run"   2 $C threecard play deal:2h,3h,4h,as,kd,qc --runs 10
+expect_exit "tc check is alone"    2 $C threecard check ante:25
+expect_exit "tc unknown option"    2 $C threecard play --nope
+
+# simulation needs a scripted action
+expect_exit "tc runs needs action"  2 $C threecard --runs 10
+expect_exit "tc stats needs action" 2 $C threecard --stats --iterations 10
+expect_exit "tc runs play ok"       0 $C threecard play --runs 10 --seed 1
+expect_exit "tc runs fold ok"       0 $C threecard fold --runs 10 --seed 1
+expect_grep "tc runs table" "dealer qualifies" $C threecard play --runs 100 --seed 1
+expect_grep "tc runs hand table" "^PLAYER HAND" $C threecard play --runs 100 --seed 1
+expect_grep "tc runs json" '"strategy":"play"' \
+    $C threecard play --runs 100 --seed 1 --json
+expect_grep "tc runs json hands" '"player_hands":{"high_card":' \
+    $C threecard play --runs 100 --seed 1 --json
+expect_grep "tc runs quiet" "^runs=100 ante=25 pairplus=5 strategy=play " \
+    $C threecard pairplus:5 play --runs 100 --seed 1 --quiet
+n=$($C threecard play --runs 1000 --seed 1 --quiet | wc -l)
+[ "$n" -eq 1 ] && ok || bad "tc runs quiet is a single line (got $n)"
+n=$($C threecard play --runs 1000 --seed 1 --json | wc -l)
+[ "$n" -eq 1 ] && ok || bad "tc runs json is a single line (got $n)"
+
+# accounting: the counters partition the rounds and the money adds up.
+# playing stakes a second wager equal to the ante; the ante bonus is a
+# payout, never an extra wager.
+$C threecard pairplus:5 play --runs 20000 --seed 3 --json | awk '
+{
+  n = split($0, f, /[{},]/)
+  for (i = 1; i <= n; i++) {
+    split(f[i], kv, ":")
+    gsub(/"/, "", kv[1])
+    v[kv[1]] = kv[2]
+  }
+  cats = v["high_card"] + v["pair"] + v["flush"]
+  cats = cats + v["straight"] + v["three_of_a_kind"] + v["straight_flush"]
+  ok = v["rounds"] == 20000 &&
+       v["plays"] + v["folds"] == v["rounds"] &&
+       v["folds"] == 0 &&
+       v["player_wins"] + v["dealer_wins"] + v["pushes"] + v["no_qualify"] == v["plays"] &&
+       cats == v["rounds"] &&
+       v["wagered"] == v["rounds"] * (25 + 25 + 5) &&
+       v["net"] == v["returned"] - v["wagered"]
+  print (ok ? "TC_OK" : "TC_BAD")
+}' | grep -q TC_OK && ok || bad "tc accounting adds up (play strategy)"
+
+# folding stakes the ante only, and never the play wager
+$C threecard fold --runs 20000 --seed 3 --json | awk '
+{
+  n = split($0, f, /[{},]/)
+  for (i = 1; i <= n; i++) {
+    split(f[i], kv, ":")
+    gsub(/"/, "", kv[1])
+    v[kv[1]] = kv[2]
+  }
+  ok = v["plays"] == 0 && v["folds"] == v["rounds"] &&
+       v["ante_bonus_hits"] == 0 &&
+       v["wagered"] == v["rounds"] * 25 && v["returned"] == 0 &&
+       v["net"] == -v["wagered"]
+  print (ok ? "FOLD_OK" : "FOLD_BAD")
+}' | grep -q FOLD_OK && ok || bad "tc accounting adds up (fold strategy)"
+
+# the dealt hands do not depend on the action, so the dealer qualifies
+# just as often either way
+qp=$($C threecard play --runs 20000 --seed 3 --json |
+     sed 's/.*"dealer_qualifies":\([0-9]*\).*/\1/')
+qf=$($C threecard fold --runs 20000 --seed 3 --json |
+     sed 's/.*"dealer_qualifies":\([0-9]*\).*/\1/')
+[ "$qp" = "$qf" ] && ok || bad "tc qualification is action independent"
+# sanity: the dealer qualifies on 69.59% of all C(52,3) hands
+[ "$qp" -gt 13500 ] && [ "$qp" -lt 14300 ] && ok || \
+    bad "tc dealer qualification rate plausible (got $qp / 20000)"
+# sanity: a pair is 3744/22100 = 16.94% of hands
+pr=$($C threecard play --runs 20000 --seed 3 --json |
+     sed 's/.*"pair":\([0-9]*\).*/\1/')
+[ "$pr" -gt 3100 ] && [ "$pr" -lt 3700 ] && ok || \
+    bad "tc pair rate plausible (got $pr / 20000)"
+
+# GUI gating (the GUI itself needs a display; not run here)
+expect_exit "tc gui with action" 2 $C threecard --gui play
+expect_exit "tc gui with ante"   2 $C threecard --gui ante:25
+expect_exit "tc gui with quiet"  2 $C threecard --gui --quiet
+expect_exit "tc gui with json"   2 $C threecard --gui --json
+expect_exit "tc gui with runs"   2 $C threecard --gui --runs 10
+expect_exit "tc gui with counting" 2 $C threecard --gui --counting
+expect_grep "tc gui in global help" "threecard" $C --help
+
+ln -sf casino threecard
+expect_grep "tc symlink invocation" '"game":"threecard"' \
+    sh -c "./threecard play --seed 1 --json"
+rm -f threecard
+
+# session API the GUI plays through (wager plumbing, bankroll accounting,
+# PLAY funding, locked wagers mid-hand, pay tables).  See tests/tc_front.c.
+if ${CC:-cc} -std=c11 -Isrc -o build/tc_front_test tests/tc_front.c \
+        src/games/threecard.c src/cardart.c src/cards.c src/cli.c \
+        src/output.c src/rng.c >/dev/null 2>&1; then
+    expect_exit "tc session checks" 0 ./build/tc_front_test
+else
+    bad "tc frontend test did not build"
+fi
+
+# --- let it ride (three wagers, tens or better) ---------------------------
+expect_grep "lir in game list" "^  letitride  *let it ride (three wagers" \
+    $C --help
+expect_grep "lir list-bets" "let it ride: three cards plus two community" \
+    $C letitride --list-bets
+expect_grep "lir help works" "usage:" $C letitride --help
+# the pay table in the help text is read from the engine
+expect_grep "lir lists royal"    "^  ROYAL FLUSH            1000:1$" \
+    $C letitride --list-bets
+expect_grep "lir lists sf"       "^  STRAIGHT FLUSH          200:1$" \
+    $C letitride --list-bets
+expect_grep "lir lists quads"    "^  FOUR OF A KIND           50:1$" \
+    $C letitride --list-bets
+expect_grep "lir lists boat"     "^  FULL HOUSE               11:1$" \
+    $C letitride --list-bets
+expect_grep "lir lists tens"     "^  TENS OR BETTER            1:1$" \
+    $C letitride --list-bets
+
+# pure rule predicates (self-test, no RNG involved)
+expect_exit "lir rule self-test passes" 0 $C letitride check
+expect_grep "lir check no failures" "check: 31 passed, 0 failed" \
+    $C letitride check
+# the qualifying pair is TENS or better, not video poker's jacks or better
+expect_grep "lir pair of tens qualifies" \
+    "^pair of tens  *pair_tens_or_better 1:1 " $C letitride check
+expect_grep "lir pair of nines does not" "^pair of nines  *nothing 0:1 " \
+    $C letitride check
+expect_grep "lir pair of jacks"  "^pair of jacks  *pair_tens_or_better 1:1 " \
+    $C letitride check
+expect_grep "lir pair of queens" "^pair of queens  *pair_tens_or_better 1:1 " \
+    $C letitride check
+expect_grep "lir pair of kings"  "^pair of kings  *pair_tens_or_better 1:1 " \
+    $C letitride check
+expect_grep "lir pair of aces"   "^pair of aces  *pair_tens_or_better 1:1 " \
+    $C letitride check
+# the rest of the ladder
+expect_grep "lir two pair 2:1"   "^two pair  *two_pair 2:1 "  $C letitride check
+expect_grep "lir trips 3:1"      "^three of a kind  *three_of_a_kind 3:1 " \
+    $C letitride check
+expect_grep "lir straight 5:1"   "^straight  *straight 5:1 "  $C letitride check
+expect_grep "lir flush 8:1"      "^flush  *flush 8:1 "        $C letitride check
+expect_grep "lir boat 11:1"      "^full house  *full_house 11:1 " \
+    $C letitride check
+expect_grep "lir quads 50:1"     "^four of a kind  *four_of_a_kind 50:1 " \
+    $C letitride check
+expect_grep "lir sf 200:1"       "^straight flush  *straight_flush 200:1 " \
+    $C letitride check
+# a royal takes the royal price, not the generic straight-flush one
+expect_grep "lir royal 1000:1"   "^royal flush  *royal_flush 1000:1 " \
+    $C letitride check
+expect_grep "lir king-high sf stays 200" \
+    "^king high sf  *straight_flush 200:1 " $C letitride check
+# community cards stay down until their own stage
+expect_grep "lir nothing shown at first" "^before decision 1  *0 community " \
+    $C letitride check
+expect_grep "lir one after decision 1"   "^after decision 1  *1 community " \
+    $C letitride check
+expect_grep "lir two after decision 2"   "^after decision 2  *2 community " \
+    $C letitride check
+
+# fixed deals: the four decision combinations on one losing hand.  a pulled
+# wager is handed back, so it never counts as a gambling loss.
+expect_grep "lir ride,ride risks three" \
+    "^LOSS hand=nothing cards=9h,9d,2c,5s,7d bets=ride,ride,ride riding=3 pulled_back=0 wagered=75 returned=0 net=-75$" \
+    $C letitride deal:9h,9d,2c,5s,7d ride,ride --quiet
+expect_grep "lir pull,ride risks two" \
+    "^LOSS .* bets=pulled,ride,ride riding=2 pulled_back=25 wagered=50 returned=0 net=-50$" \
+    $C letitride deal:9h,9d,2c,5s,7d pull,ride --quiet
+expect_grep "lir ride,pull risks two" \
+    "^LOSS .* bets=ride,pulled,ride riding=2 pulled_back=25 wagered=50 returned=0 net=-50$" \
+    $C letitride deal:9h,9d,2c,5s,7d ride,pull --quiet
+expect_grep "lir pull,pull risks one" \
+    "^LOSS .* bets=pulled,pulled,ride riding=1 pulled_back=50 wagered=25 returned=0 net=-25$" \
+    $C letitride deal:9h,9d,2c,5s,7d pull,pull --quiet
+# every riding wager is paid separately: stake plus profit, each
+expect_grep "lir boat pays every rider" \
+    "^WIN hand=full_house .* riding=3 pulled_back=0 wagered=75 returned=900 net=+825$" \
+    $C letitride deal:6h,6d,6c,9s,9d ride,ride --quiet
+expect_grep "lir boat pays two riders" \
+    "^WIN hand=full_house .* riding=2 pulled_back=25 wagered=50 returned=600 net=+550$" \
+    $C letitride deal:6h,6d,6c,9s,9d pull,ride --quiet
+expect_grep "lir boat pays one rider" \
+    "^WIN hand=full_house .* riding=1 pulled_back=50 wagered=25 returned=300 net=+275$" \
+    $C letitride deal:6h,6d,6c,9s,9d pull,pull --quiet
+# representative categories at their listed price (bet 25, three riding)
+expect_grep "lir tens pays 1:1"  "returned=150 net=+75$" \
+    $C letitride deal:10h,10d,2c,5s,7d ride,ride --quiet
+expect_grep "lir nines pay nothing" "returned=0 net=-75$" \
+    $C letitride deal:9h,9d,2c,5s,7d ride,ride --quiet
+expect_grep "lir two pair pays 2:1" "returned=225 net=+150$" \
+    $C letitride deal:3h,3d,5c,5s,9d ride,ride --quiet
+expect_grep "lir straight pays 5:1" "returned=450 net=+375$" \
+    $C letitride deal:5h,6d,7c,8s,9d ride,ride --quiet
+expect_grep "lir flush pays 8:1"    "returned=675 net=+600$" \
+    $C letitride deal:2h,5h,9h,jh,kh ride,ride --quiet
+expect_grep "lir quads pay 50:1"    "returned=3825 net=+3750$" \
+    $C letitride deal:7h,7d,7c,7s,2d ride,ride --quiet
+expect_grep "lir sf pays 200:1"     "returned=15075 net=+15000$" \
+    $C letitride deal:5h,6h,7h,8h,9h ride,ride --quiet
+expect_grep "lir royal pays 1000:1" "returned=75075 net=+75000$" \
+    $C letitride deal:10h,jh,qh,kh,ah ride,ride --quiet
+# the bet size scales the whole round, and bet:N is EACH wager
+expect_grep "lir bet:10 commits 30" '"bet":10,"committed":30' \
+    $C letitride bet:10 deal:6h,6d,6c,9s,9d ride,ride --json
+expect_grep "lir bet:10 boat"       "wagered=30 returned=360 net=+330$" \
+    $C letitride bet:10 deal:6h,6d,6c,9s,9d ride,ride --quiet
+
+# seeded deals
+expect_grep "lir seeded loss" \
+    "^LOSS hand=nothing cards=3s,10c,9c,7d,Kc bets=ride,ride,ride riding=3 pulled_back=0 wagered=75 returned=0 net=-75$" \
+    $C letitride ride,ride --seed 3 --quiet
+expect_grep "lir seeded qualifying pair" \
+    "^WIN hand=pair_tens_or_better cards=7c,3h,Ac,Ah,10d .* net=+75$" \
+    $C letitride ride,ride --seed 8 --quiet
+expect_grep "lir seeded two pair"  "^WIN hand=two_pair cards=2s,Jc,7h,2d,Js .* net=+150$" \
+    $C letitride ride,ride --seed 2 --quiet
+expect_grep "lir seeded trips"     "^WIN hand=three_of_a_kind .* net=+225$" \
+    $C letitride ride,ride --seed 120 --quiet
+expect_grep "lir seeded straight"  "^WIN hand=straight .* net=+375$" \
+    $C letitride ride,ride --seed 113 --quiet
+expect_grep "lir seeded flush"     "^WIN hand=flush .* net=+600$" \
+    $C letitride ride,ride --seed 132 --quiet
+# the same seed deals the same cards whatever the decisions
+expect_grep "lir pulls keep the cards" "cards=3s,10c,9c,7d,Kc" \
+    $C letitride pull,pull --seed 3 --quiet
+
+a=$($C letitride ride,ride --seed 42 --json)
+b=$($C letitride ride,ride --seed 42 --json)
+[ "$a" = "$b" ] && ok || bad "lir seeded runs identical"
+n=$($C letitride ride,ride --seed 3 --iterations 5 --quiet | wc -l)
+[ "$n" -eq 5 ] && ok || bad "lir iterations produce 5 lines (got $n)"
+
+# output modes
+expect_grep "lir json game key" '"game":"letitride"' \
+    $C letitride ride,ride --seed 3 --json
+expect_grep "lir json player"   '"player":\["3s","10c","9c"\]' \
+    $C letitride ride,ride --seed 3 --json
+expect_grep "lir json community" '"community":\["7d","Kc"\]' \
+    $C letitride ride,ride --seed 3 --json
+expect_grep "lir json bets"     '"bets":\["pulled","riding","riding"\],"riding":2' \
+    $C letitride pull,ride --seed 3 --json
+expect_grep "lir json payout"   '"hand":"full_house","payout_per_unit":11' \
+    $C letitride deal:6h,6d,6c,9s,9d ride,ride --json
+# normal output shows the board growing one card at a time
+expect_grep "lir shows three cards" "^Your cards: 3s 10c 9c$" \
+    $C letitride ride,ride --seed 3
+expect_grep "lir shows four cards"  "^Board:      3s 10c 9c 7d$" \
+    $C letitride ride,ride --seed 3
+expect_grep "lir shows five cards"  "^Final hand: 3s 10c 9c 7d Kc$" \
+    $C letitride ride,ride --seed 3
+expect_grep "lir echoes decisions"  "^> ride$"     $C letitride ride,ride --seed 3
+expect_grep "lir shows pulled bet"  "^Bet 1:      PULLED$" \
+    $C letitride pull,ride --seed 3
+expect_grep "lir shows riding count" "^Riding:     2 of 3$" \
+    $C letitride pull,ride --seed 3
+expect_grep "lir shows pulled back" "^Pulled back:      25$" \
+    $C letitride pull,ride --seed 3
+expect_grep "lir shows the price"   "(pays 11:1)" \
+    $C letitride deal:6h,6d,6c,9s,9d ride,ride
+expect_grep "lir art cards" "┌─────────┐" \
+    env CASINO_CARDS=art $C letitride ride,ride --seed 3
+# no community card may appear before its decision
+$C letitride ride,ride --seed 3 | awk '
+/^Your cards:/ { if (NF != 5) bad = 1 }   # two label words + three cards
+/^Board:/      { if (NF != 5) bad = 1 }   # one label word + four cards
+/^Final hand:/ { if (NF != 7) bad = 1 }   # two label words + five cards
+END { print (bad ? "EARLY" : "STAGED") }' | grep -q STAGED && ok || \
+    bad "lir reveals one community card per stage"
+
+# interactive
+expect_grep "lir prompts twice" "\[r\]ide / \[p\]ull" \
+    sh -c "printf 'r\nr\n' | $C letitride --seed 3"
+expect_grep "lir interactive pull" "^Bet 1:      PULLED$" \
+    sh -c "printf 'pull\nride\n' | $C letitride --seed 3"
+expect_grep "lir interactive ride" "^Riding:     3 of 3$" \
+    sh -c "printf 'ride\nride\n' | $C letitride --seed 3"
+expect_grep "lir reprompts on bad input" "invalid choice" \
+    sh -c "printf 'zzz\nr\nr\n' | $C letitride --seed 3"
+expect_grep "lir EOF lets it ride" "^Riding:     3 of 3$" \
+    sh -c "$C letitride --seed 3 </dev/null"
+expect_exit "lir interactive EOF" 0 sh -c "$C letitride --seed 3 </dev/null"
+
+# validation
+expect_exit "lir unknown argument"  2 $C letitride banana
+expect_exit "lir one decision only" 2 $C letitride ride
+expect_exit "lir three decisions"   2 $C letitride ride,ride,ride
+expect_exit "lir bad action word"   2 $C letitride ride,zzz
+expect_exit "lir action with value" 2 $C letitride ride:1
+expect_exit "lir bet zero"          2 $C letitride ride,ride bet:0
+expect_exit "lir bet negative"      2 $C letitride ride,ride bet:-5
+expect_exit "lir bet too big"       2 $C letitride ride,ride bet:100000
+expect_exit "lir bet malformed"     2 $C letitride ride,ride bet:x
+expect_exit "lir deal too few"      2 $C letitride ride,ride deal:ah,kh,qh
+expect_exit "lir deal duplicate"    2 $C letitride ride,ride deal:ah,ah,qh,jh,10h
+expect_exit "lir deal bad card"     2 $C letitride ride,ride deal:ax,kh,qh,jh,10h
+expect_exit "lir deal cannot run"   2 \
+    $C letitride ride,ride deal:ah,kh,qh,jh,10h --runs 10
+expect_exit "lir check is alone"    2 $C letitride check bet:25
+expect_exit "lir unknown option"    2 $C letitride ride,ride --nope
+expect_exit "lir space separated"   0 $C letitride ride ride --seed 3
+
+# simulation needs scripted decisions
+expect_exit "lir runs needs script"  2 $C letitride --runs 10
+expect_exit "lir stats needs script" 2 $C letitride --stats --iterations 10
+expect_exit "lir runs ride,ride ok"  0 $C letitride ride,ride --runs 10 --seed 1
+expect_exit "lir runs pull,pull ok"  0 $C letitride pull,pull --runs 10 --seed 1
+expect_grep "lir runs table" "^FINAL HAND" $C letitride ride,ride --runs 100 --seed 1
+expect_grep "lir runs risk note" "only what stayed at risk" \
+    $C letitride ride,ride --runs 100 --seed 1
+expect_grep "lir runs json" '"strategy":"pull,ride"' \
+    $C letitride pull,ride --runs 100 --seed 1 --json
+expect_grep "lir runs quiet" "^runs=100 bet=25 strategy=ride,ride " \
+    $C letitride ride,ride --runs 100 --seed 1 --quiet
+n=$($C letitride ride,ride --runs 1000 --seed 1 --quiet | wc -l)
+[ "$n" -eq 1 ] && ok || bad "lir runs quiet is a single line (got $n)"
+n=$($C letitride ride,ride --runs 1000 --seed 1 --json | wc -l)
+[ "$n" -eq 1 ] && ok || bad "lir runs json is a single line (got $n)"
+
+# accounting: pulled stakes come back and never count as gambled
+$C letitride pull,ride --runs 20000 --seed 3 --json | awk '
+{
+  n = split($0, f, /[{},]/)
+  for (i = 1; i <= n; i++) {
+    split(f[i], kv, ":")
+    gsub(/"/, "", kv[1])
+    v[kv[1]] = kv[2]
+  }
+  hands = v["nothing"] + v["pair_tens_or_better"] + v["two_pair"]
+  hands = hands + v["three_of_a_kind"] + v["straight"] + v["flush"]
+  hands = hands + v["full_house"] + v["four_of_a_kind"]
+  hands = hands + v["straight_flush"] + v["royal_flush"]
+  ok = v["rounds"] == 20000 &&
+       v["bet1_pulls"] == 20000 && v["bet2_pulls"] == 0 &&
+       v["2"] == v["rounds"] &&
+       hands == v["rounds"] &&
+       v["wins"] + v["losses"] == v["rounds"] &&
+       v["committed"] == v["rounds"] * 75 &&
+       v["pulled_back"] == v["rounds"] * 25 &&
+       v["wagered"] == v["committed"] - v["pulled_back"] &&
+       v["net"] == v["returned"] - v["wagered"]
+  print (ok ? "LIR_OK" : "LIR_BAD")
+}' | grep -q LIR_OK && ok || bad "lir accounting adds up (pull,ride)"
+
+# riding counts follow the script exactly
+$C letitride pull,pull --runs 5000 --seed 3 --json | awk '
+{
+  n = split($0, f, /[{},]/)
+  for (i = 1; i <= n; i++) {
+    split(f[i], kv, ":")
+    gsub(/"/, "", kv[1])
+    v[kv[1]] = kv[2]
+  }
+  ok = v["bet1_pulls"] == 5000 && v["bet2_pulls"] == 5000 &&
+       v["wagered"] == 5000 * 25 &&
+       v["pulled_back"] == 5000 * 50 &&
+       v["committed"] == 5000 * 75
+  print (ok ? "PP_OK" : "PP_BAD")
+}' | grep -q PP_OK && ok || bad "lir accounting adds up (pull,pull)"
+
+# the deal does not depend on the decisions, so the hand distribution and
+# the per-unit return are the same however the wagers are pulled
+r3=$($C letitride ride,ride --runs 20000 --seed 3 --json |
+     sed 's/.*"return_per_unit":\([0-9.]*\).*/\1/')
+r1=$($C letitride pull,pull --runs 20000 --seed 3 --json |
+     sed 's/.*"return_per_unit":\([0-9.]*\).*/\1/')
+[ "$r3" = "$r1" ] && ok || bad "lir return per unit is pull independent"
+# sanity: a paying hand (tens or better) turns up about 23.9% of the time
+w=$($C letitride ride,ride --runs 20000 --seed 3 --json |
+    sed 's/.*"wins":\([0-9]*\).*/\1/')
+[ "$w" -gt 4400 ] && [ "$w" -lt 5200 ] && ok || \
+    bad "lir winning-hand rate plausible (got $w / 20000)"
+
+# GUI gating (the GUI itself needs a display; not run here)
+expect_exit "lir gui with actions" 2 $C letitride --gui ride,ride
+expect_exit "lir gui with bet"     2 $C letitride --gui bet:25
+expect_exit "lir gui with quiet"   2 $C letitride --gui --quiet
+expect_exit "lir gui with json"    2 $C letitride --gui --json
+expect_exit "lir gui with runs"    2 $C letitride --gui --runs 10
+expect_exit "lir gui with counting" 2 $C letitride --gui --counting
+
+ln -sf casino letitride
+expect_grep "lir symlink invocation" '"game":"letitride"' \
+    sh -c "./letitride ride,ride --seed 3 --json"
+rm -f letitride
+
+# session API the GUI plays through (wager plumbing, bankroll accounting,
+# pulled stakes, the community-card reveal gate).  See tests/lir_front.c.
+if ${CC:-cc} -std=c11 -Isrc -o build/lir_front_test tests/lir_front.c \
+        src/games/letitride.c src/cardart.c src/cards.c src/cli.c \
+        src/output.c src/poker.c src/rng.c >/dev/null 2>&1; then
+    expect_exit "lir session checks" 0 ./build/lir_front_test
+else
+    bad "lir frontend test did not build"
 fi
 
 echo
