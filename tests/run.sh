@@ -221,32 +221,50 @@ expect_exit "slots spin exits 0"     0 $C slots --seed 1
 expect_exit "slots takes no bets"    2 $C slots red
 expect_exit "slots bet with value"   2 $C slots line:1
 
-# every payout category, pinned to deterministic seeds
-expect_grep "slots jackpot 4xSEVEN" "^JACKPOT$"   $C slots --seed 143 --quiet
-expect_grep "slots big win 4xBAR"   "^BIG_WIN$"   $C slots --seed 84  --quiet
-expect_grep "slots 4xBELL win"      "^WIN$"       $C slots --seed 92  --quiet
-expect_grep "slots 4xCHERRY win"    "^WIN$"       $C slots --seed 5   --quiet
-expect_grep "slots three-cherry"    "^SMALL_WIN$" $C slots --seed 26  --quiet
+# every payline payout category, pinned to deterministic seeds
+expect_grep "slots jackpot 3xSEVEN" "^JACKPOT$"   $C slots --seed 253 --quiet
+expect_grep "slots big win 3xBAR"   "^BIG_WIN$"   $C slots --seed 84  --quiet
+expect_grep "slots 3xBELL win"      "^WIN$"       $C slots --seed 29  --quiet
+expect_grep "slots 3xCHERRY win"    "^WIN$"       $C slots --seed 476 --quiet
+expect_grep "slots two-cherry"      "^SMALL_WIN$" $C slots --seed 3   --quiet
 expect_grep "slots loss"            "^LOSS$"      $C slots --seed 1   --quiet
-# four of a non-paying symbol is still a loss
-expect_grep "slots 4xLEMON loses"   "^LOSS$"      $C slots --seed 25  --quiet
-expect_grep "slots 4xLEMON reels" \
-    '"reels":\["BELL","LEMON","ORANGE","LEMON","LEMON","LEMON"\]' \
-    $C slots --seed 25 --json
+# three of a non-paying symbol on the payline is still a loss
+expect_grep "slots 3xLEMON loses"   "^LOSS$"      $C slots --seed 7   --quiet
 
 a=$($C slots --seed 123 --json)
 b=$($C slots --seed 123 --json)
 [ "$a" = "$b" ] && ok || bad "slots seeded runs identical"
 
-expect_grep "slots normal reels" \
-    "\[ .* \] \[ .* \] \[ .* \] \[ .* \] \[ .* \] \[ .* \]" $C slots --seed 1
-expect_grep "slots payout line"   "Payout: 100:1" $C slots --seed 143
-expect_grep "slots json game key" '"game":"slots"'  $C slots --seed 143 --json
-expect_grep "slots json reels" \
-    '"reels":\["SEVEN","SEVEN","LEMON","SEVEN","SEVEN","BAR"\]' \
-    $C slots --seed 143 --json
-expect_grep "slots json result"   '"result":"jackpot"' $C slots --seed 143 --json
-expect_grep "slots json payout"   '"payout":"100:1"'   $C slots --seed 143 --json
+# 3x3 window: 3 rows rendered, middle row marked as the payline
+expect_grep "slots window top border" "┌──────────┬──────────┬──────────┐" \
+    $C slots --seed 1
+expect_grep "slots window payline marker" "<- PAYLINE" $C slots --seed 1
+n=$($C slots --seed 1 | grep -c "│")
+[ "$n" -eq 3 ] && ok || bad "slots window has 3 symbol rows (got $n)"
+
+# columns are adjacent circular strip entries: seed 8 stops reel 1 at the
+# last strip index (bottom wraps to index 0), seed 9 at index 0 (top wraps
+# to the last index).  Windows verified against the REEL_A strip.
+expect_grep "slots wraparound at last index" \
+    '"window":\[\["SEVEN","LEMON","CHERRY"\],\["LEMON","CHERRY","LEMON"\],\["CHERRY","ORANGE","BAR"\]\]' \
+    $C slots --seed 8 --json
+expect_grep "slots wraparound at index 0" \
+    '"window":\[\["LEMON","LEMON","ORANGE"\],\["CHERRY","BAR","SEVEN"\],\["LEMON","ORANGE","LEMON"\]\]' \
+    $C slots --seed 9 --json
+# seed 8's full window holds three CHERRYs but the payline has only one:
+# top/bottom rows must not pay
+expect_grep "slots top/bottom rows never pay" "^LOSS$" $C slots --seed 8 --quiet
+
+expect_grep "slots payout line"   "Payout: 100:1" $C slots --seed 253
+expect_grep "slots json game key" '"game":"slots"'  $C slots --seed 253 --json
+expect_grep "slots json reels kept" '"reels":\["SEVEN","SEVEN","SEVEN"\]' \
+    $C slots --seed 253 --json
+expect_grep "slots json payline"  '"payline":\["SEVEN","SEVEN","SEVEN"\]' \
+    $C slots --seed 253 --json
+expect_grep "slots json window middle is payline" \
+    '\],\["SEVEN","SEVEN","SEVEN"\],\[' $C slots --seed 253 --json
+expect_grep "slots json result"   '"result":"jackpot"' $C slots --seed 253 --json
+expect_grep "slots json payout"   '"payout":"100:1"'   $C slots --seed 253 --json
 expect_grep "slots help works"    "usage:"    $C slots --help
 expect_grep "slots list-bets"     "JACKPOT"   $C slots --list-bets
 
@@ -257,10 +275,10 @@ expect_grep "slots stats table" "RESULT" $C slots --seed 3 --iterations 200 --st
 expect_grep "slots stats json"  '"iterations":200' \
     $C slots --seed 3 --iterations 200 --stats --json
 
-# sanity: jackpot (4+ SEVEN of 6 reels) over 100k seeded spins near 0.12%
+# sanity: payline jackpot over 100k seeded spins near (2/20)^3 = 0.1%
 jp=$($C slots --seed 3 --iterations 100000 --stats --json |
      sed 's/.*"jackpot":\([0-9]*\).*/\1/')
-[ "$jp" -gt 60 ] && [ "$jp" -lt 220 ] && ok || \
+[ "$jp" -gt 40 ] && [ "$jp" -lt 200 ] && ok || \
     bad "slots jackpot rate plausible (got $jp / 100000)"
 
 ln -sf casino slots
@@ -518,6 +536,69 @@ w=$($C roulette red --runs 100000 --seed 9 --json |
     sed 's/.*"wins":\([0-9]*\).*/\1/')
 [ "$w" -gt 47500 ] && [ "$w" -lt 49800 ] && ok || \
     bad "runs 100k plausible (got $w)"
+
+# --- videopoker EV solver / trainer --------------------------------------
+# exactly 32 hold masks, with the correct combination counts
+n=$($C videopoker solve:2c,7d,9h,4s,10c | grep -c "^hold=")
+[ "$n" -eq 32 ] && ok || bad "solver evaluates 32 masks (got $n)"
+expect_grep "solver C(47,5) draws" "^hold=none draws=1533939 " \
+    $C videopoker solve:2c,7d,9h,4s,10c
+expect_grep "solver C(47,4) draws" "^hold=1 draws=178365 " \
+    $C videopoker solve:2c,7d,9h,4s,10c
+expect_grep "solver C(47,3) draws" "^hold=1,2 draws=16215 " \
+    $C videopoker solve:2c,7d,9h,4s,10c
+expect_grep "solver C(47,2) draws" "^hold=1,2,3 draws=1081 " \
+    $C videopoker solve:2c,7d,9h,4s,10c
+expect_grep "solver C(47,1) draws" "^hold=1,2,3,4 draws=47 " \
+    $C videopoker solve:2c,7d,9h,4s,10c
+expect_grep "solver pat-hand draws" "^hold=1,2,3,4,5 draws=1 " \
+    $C videopoker solve:2c,7d,9h,4s,10c
+
+# known optimal plays
+expect_grep "solver pat royal"     "optimal: hold=1,2,3,4,5 ev=250.0000" \
+    $C videopoker solve:10h,jh,qh,kh,ah
+expect_grep "solver 4 to royal beats pair" "optimal: hold=1,2,3,4 ev=7.9574" \
+    $C videopoker solve:10s,js,qs,ks,kd
+expect_grep "solver four of a kind" "ev=25.0000" \
+    $C videopoker solve:2c,2d,2h,2s,kc
+expect_grep "solver pat full house" "optimal: hold=1,2,3,4,5 ev=9.0000" \
+    $C videopoker solve:kc,kd,kh,2s,2c
+expect_grep "solver high pair"     "optimal: hold=1,2 ev=1.5365" \
+    $C videopoker solve:jc,jd,3h,7s,9c
+expect_grep "solver low pair"      "optimal: hold=1,2 ev=0.8237" \
+    $C videopoker solve:10c,10d,3h,7s,9c
+expect_grep "solver 4 to flush"    "optimal: hold=1,2,3,4 ev=1.2128" \
+    $C videopoker solve:2h,5h,9h,jh,3c
+expect_grep "solver worthless hand" "optimal: hold=none" \
+    $C videopoker solve:2c,7d,9h,4s,10c
+
+# exact ties are recognised: quads pay 25 whether the kicker is held or not
+n=$($C videopoker solve:2c,2d,2h,2s,kc | grep -c " \*$")
+[ "$n" -eq 2 ] && ok || bad "solver marks both equal-EV quad holds (got $n)"
+
+# solver validation
+expect_exit "solver malformed hand" 2 $C videopoker solve:zz
+expect_exit "solver extra args"     2 $C videopoker solve:2c,7d,9h,4s,10c hold:1
+
+# trainer: piped session, deterministic seed, session stats
+expect_grep "trainer suboptimal verdict" "SUBOPTIMAL" \
+    sh -c "printf '4,5\n\n' | $C videopoker --trainer --seed 5"
+expect_grep "trainer optimal hold shown" "Optimal hold: Jc Qd" \
+    sh -c "printf '4,5\n\n' | $C videopoker --trainer --seed 5"
+expect_grep "trainer ev lost"  "EV lost:      0.1815" \
+    sh -c "printf '4,5\n\n' | $C videopoker --trainer --seed 5"
+expect_grep "trainer optimal verdict" "^OPTIMAL$" \
+    sh -c "printf '1,4\n\n' | $C videopoker --trainer --seed 5"
+expect_grep "trainer session stats" "Optimal decisions: 1" \
+    sh -c "printf '1,4\n\n' | $C videopoker --trainer --seed 5"
+expect_grep "trainer accuracy" "Accuracy:          100.0%" \
+    sh -c "printf '1,4\n\n' | $C videopoker --trainer --seed 5"
+
+# trainer gating
+expect_exit "trainer other game"   2 $C roulette red --trainer
+expect_exit "trainer quiet mode"   2 sh -c "$C videopoker --trainer --quiet </dev/null"
+expect_exit "trainer with bets"    2 sh -c "$C videopoker --trainer hold:1 </dev/null"
+expect_exit "trainer EOF exits 0"  0 sh -c "$C videopoker --trainer --seed 1 </dev/null"
 
 echo
 echo "passed: $pass  failed: $fail"

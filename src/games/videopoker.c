@@ -1,6 +1,9 @@
+#define _DEFAULT_SOURCE
+
 #include "videopoker.h"
 
 #include <ctype.h>
+#include <signal.h>
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
@@ -9,6 +12,7 @@
 #include "cards.h"
 #include "output.h"
 #include "poker.h"
+#include "vpsolve.h"
 
 /* Jacks or Better pay ladder, ordered low to high. */
 typedef enum {
@@ -215,8 +219,8 @@ static void hand_json(FILE *f, const card_t hand[5])
     fputc(']', f);
 }
 
-/* Ask for holds on disp/stdin.  EOF keeps the dealt hand (hold all). */
-static void interactive_holds(FILE *disp, bool held[5])
+/* Ask for holds on disp/stdin.  Returns false on EOF. */
+static bool interactive_holds(FILE *disp, bool held[5])
 {
     for (;;) {
         fprintf(disp, "\nHold cards (e.g. 1,3 | none | all):\n> ");
@@ -224,26 +228,187 @@ static void interactive_holds(FILE *disp, bool held[5])
         char line[64];
         if (!fgets(line, sizeof line, stdin)) {
             fprintf(disp, "\n");
-            for (int i = 0; i < 5; i++)
-                held[i] = true;
-            return;
+            return false;
         }
         line[strcspn(line, "\r\n")] = '\0';
         if (parse_hold_line(line, held) == 0)
-            return;
+            return true;
         fprintf(disp, "invalid holds (positions 1-5, no duplicates)\n");
     }
 }
 
+/* ---- strategy solver glue --------------------------------------------- */
+
+/* Pay table hook handed to the generic solver: this is the game's
+ * currently selected variant (Jacks or Better). */
+static int vp_pay(const card_t hand[5])
+{
+    return VP_PAYOUT[vp_classify(hand, NULL)];
+}
+
+static const char *mask_positions(uint32_t mask, char *buf, size_t len)
+{
+    size_t off = 0;
+    buf[0] = '\0';
+    for (int i = 0; i < 5; i++)
+        if (mask & (1u << i))
+            off += (size_t)snprintf(buf + off, len - off, "%s%d",
+                                    off ? "," : "", i + 1);
+    return off ? buf : "none";
+}
+
+static const char *mask_cards(const card_t hand[5], uint32_t mask,
+                              char *buf, size_t len)
+{
+    char cb[8];
+    size_t off = 0;
+    buf[0] = '\0';
+    for (int i = 0; i < 5; i++) {
+        if (mask & (1u << i)) {
+            card_name(hand[i], cb, sizeof cb);
+            off += (size_t)snprintf(buf + off, len - off, "%s%s",
+                                    off ? " " : "", cb);
+        }
+    }
+    return off ? buf : "none";
+}
+
+/* solve:... hook: print the EV of all 32 hold masks plus the optimum. */
+static int solve_print(const card_t hand[5])
+{
+    vp_hold_ev_t evs[VP_NMASKS];
+    char pos[16];
+
+    vp_solve(hand, vp_pay, evs);
+    int best = vp_solve_best(evs);
+
+    for (int m = 0; m < VP_NMASKS; m++)
+        printf("hold=%s draws=%ld ev=%.4f%s\n",
+               mask_positions((uint32_t)m, pos, sizeof pos),
+               evs[m].draws, vp_ev(&evs[m]),
+               vp_ev_equal(&evs[m], &evs[best]) ? " *" : "");
+    printf("optimal: hold=%s ev=%.4f\n",
+           mask_positions((uint32_t)best, pos, sizeof pos),
+           vp_ev(&evs[best]));
+    return 0;
+}
+
+/* ---- interactive strategy trainer -------------------------------------- */
+
+static volatile sig_atomic_t trainer_stop = 0;
+
+static void trainer_sigint(int sig)
+{
+    (void)sig;
+    trainer_stop = 1;
+}
+
+static int trainer_run(const cli_t *cli, rng_t *rng)
+{
+    (void)cli;
+    long hands = 0, optimal = 0;
+    double ev_lost_total = 0.0;
+
+    /* no SA_RESTART: Ctrl+C makes the pending fgets return NULL so the
+     * session ends cleanly with its statistics */
+    struct sigaction sa = { 0 };
+    sa.sa_handler = trainer_sigint;
+    sigaction(SIGINT, &sa, NULL);
+
+    puts("VIDEO POKER TRAINER (Jacks or Better)");
+    puts("Enter your hold, see the solver's optimal play. "
+         "Ctrl+C or EOF ends the session.");
+
+    while (!trainer_stop) {
+        card_t hand[5];
+        shoe_t shoe;
+        bool held[5] = { false };
+
+        shoe_init(&shoe, 1);
+        shoe_shuffle(&shoe, rng);
+        for (int i = 0; i < 5; i++)
+            hand[i] = shoe_draw(&shoe);
+
+        printf("\n");
+        print_hand(stdout, hand);
+
+        if (!interactive_holds(stdout, held) || trainer_stop)
+            break;
+
+        uint32_t user = 0;
+        for (int i = 0; i < 5; i++)
+            if (held[i])
+                user |= 1u << i;
+
+        vp_hold_ev_t evs[VP_NMASKS];
+        vp_solve(hand, vp_pay, evs);
+        int best = vp_solve_best(evs);
+        bool ok = vp_ev_equal(&evs[user], &evs[best]);
+        double lost = vp_ev(&evs[best]) - vp_ev(&evs[user]);
+
+        hands++;
+        optimal += ok;
+        ev_lost_total += lost;
+
+        char yours[32], opt[32];
+        printf("\n%s\n", ok ? "OPTIMAL" : "SUBOPTIMAL");
+        printf("Your hold:    %s\n",
+               mask_cards(hand, user, yours, sizeof yours));
+        printf("Optimal hold: %s\n",
+               mask_cards(hand, (uint32_t)best, opt, sizeof opt));
+        printf("Your EV:      %.4f\n", vp_ev(&evs[user]));
+        printf("Optimal EV:   %.4f\n", vp_ev(&evs[best]));
+        printf("EV lost:      %.4f\n", lost);
+
+        printf("\nPress Enter for next hand...");
+        fflush(stdout);
+        char line[16];
+        if (!fgets(line, sizeof line, stdin))
+            break;
+    }
+
+    printf("\nTRAINER SESSION\n");
+    printf("Hands:             %ld\n", hands);
+    printf("Optimal decisions: %ld\n", optimal);
+    if (hands > 0) {
+        printf("Accuracy:          %.1f%%\n",
+               100.0 * (double)optimal / (double)hands);
+        printf("Total EV lost:     %.4f\n", ev_lost_total);
+        printf("Average EV lost:   %.4f\n",
+               ev_lost_total / (double)hands);
+    }
+    return 0;
+}
+
 int videopoker_run(const cli_t *cli, rng_t *rng)
 {
-    bool scripted = false, fixed_deal = false;
+    bool scripted = false, fixed_deal = false, solve_mode = false;
     bool held[5] = { false };
     card_t fixed[5];
 
+    if (cli->trainer) {
+        if (cli->nbets != 0 || cli->quiet || cli->json || cli->stats ||
+            cli->iterations != 1) {
+            fprintf(stderr, "videopoker: --trainer is interactive only "
+                            "(no bets, --quiet, --json, --stats or "
+                            "--iterations)\n");
+            return 2;
+        }
+        return trainer_run(cli, rng);
+    }
+
     for (int i = 0; i < cli->nbets; i++) {
         const bet_t *b = &cli->bets[i];
-        if (bet_is(b, "hold")) {
+        if (bet_is(b, "solve")) {
+            if (solve_mode || cli->nbets != 1 ||
+                parse_deal(b->vraw, fixed) < 0) {
+                fprintf(stderr, "videopoker: '%s': expected 5 distinct "
+                                "cards like solve:ah,10c,7d,kh,2s "
+                                "(must be the only argument)\n", b->raw);
+                return 2;
+            }
+            solve_mode = true;
+        } else if (bet_is(b, "hold")) {
             if (scripted) {
                 fprintf(stderr, "videopoker: multiple hold arguments\n");
                 return 2;
@@ -286,6 +451,8 @@ int videopoker_run(const cli_t *cli, rng_t *rng)
                         "hold cannot be combined with it\n");
         return 2;
     }
+    if (solve_mode)
+        return solve_print(fixed);
 
     bool interactive = !scripted && !fixed_deal;
     if (interactive && cli->stats) {
@@ -319,8 +486,11 @@ int videopoker_run(const cli_t *cli, rng_t *rng)
         if (display || interactive)
             print_hand(display ? stdout : disp, initial);
 
-        if (interactive)
-            interactive_holds(disp, held);
+        if (interactive && !interactive_holds(disp, held)) {
+            /* EOF: keep the dealt hand */
+            for (int i = 0; i < 5; i++)
+                held[i] = true;
+        }
 
         if (!fixed_deal) {
             bool drew = false;
@@ -431,6 +601,10 @@ void videopoker_list_bets(void)
     puts("  videopoker hold:all        keep the dealt hand");
     puts("  videopoker deal:ah,kh,qh,jh,10h   evaluate a fixed hand "
          "(no draw)");
+    puts("  videopoker solve:as,7d,kh,2c,5s   EV of all 32 holds for a "
+         "hand");
+    puts("  videopoker --trainer       interactive strategy trainer "
+         "(optimal-hold EV)");
     puts("payouts (informational, 1-unit bet):");
     puts("  ROYAL_FLUSH 250   STRAIGHT_FLUSH 50   FOUR_OF_A_KIND 25");
     puts("  FULL_HOUSE 9      FLUSH 6             STRAIGHT 4");

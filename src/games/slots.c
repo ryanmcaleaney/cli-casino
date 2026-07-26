@@ -1,6 +1,7 @@
 #include "slots.h"
 
 #include <stdio.h>
+#include <string.h>
 
 #include "output.h"
 
@@ -47,55 +48,53 @@ static const slot_sym_t REEL_C[] = {
     SYM_CHERRY, SYM_BAR,    SYM_ORANGE, SYM_LEMON,  SYM_BELL,
     SYM_SEVEN,  SYM_ORANGE, SYM_CHERRY, SYM_LEMON,  SYM_BAR,
 };
-static const slot_sym_t REEL_D[] = {
-    SYM_BELL,   SYM_CHERRY, SYM_LEMON,  SYM_ORANGE, SYM_SEVEN,
-    SYM_LEMON,  SYM_BAR,    SYM_CHERRY, SYM_ORANGE, SYM_LEMON,
-    SYM_BELL,   SYM_ORANGE, SYM_CHERRY, SYM_BAR,    SYM_LEMON,
-    SYM_BELL,   SYM_SEVEN,  SYM_ORANGE, SYM_LEMON,  SYM_CHERRY,
-};
-static const slot_sym_t REEL_E[] = {
-    SYM_LEMON,  SYM_ORANGE, SYM_BAR,    SYM_CHERRY, SYM_BELL,
-    SYM_SEVEN,  SYM_LEMON,  SYM_CHERRY, SYM_ORANGE, SYM_BELL,
-    SYM_LEMON,  SYM_BAR,    SYM_ORANGE, SYM_CHERRY, SYM_LEMON,
-    SYM_BELL,   SYM_ORANGE, SYM_SEVEN,  SYM_LEMON,  SYM_CHERRY,
-};
-static const slot_sym_t REEL_F[] = {
-    SYM_CHERRY, SYM_BELL,   SYM_ORANGE, SYM_LEMON,  SYM_BAR,
-    SYM_ORANGE, SYM_LEMON,  SYM_SEVEN,  SYM_BELL,   SYM_CHERRY,
-    SYM_LEMON,  SYM_ORANGE, SYM_BAR,    SYM_LEMON,  SYM_BELL,
-    SYM_CHERRY, SYM_ORANGE, SYM_LEMON,  SYM_SEVEN,  SYM_BAR,
-};
-
 typedef struct {
     const slot_sym_t *strip;
     int               len;
 } slot_reel_t;
 
-#define SLOT_NREELS 6
+#define SLOT_NREELS 3
 
 #define STRIP(s) { s, (int)(sizeof s / sizeof s[0]) }
 static const slot_reel_t REELS[SLOT_NREELS] = {
-    STRIP(REEL_A), STRIP(REEL_B), STRIP(REEL_C),
-    STRIP(REEL_D), STRIP(REEL_E), STRIP(REEL_F)
+    STRIP(REEL_A), STRIP(REEL_B), STRIP(REEL_C)
 };
 
-/* Six reels: pay on symbol counts across the line.  All-six combos would
- * be ~1-in-10^8, so the tiers trigger on 4 of a kind instead. */
+/* Payline evaluation: the three middle symbols only.  The visible top
+ * and bottom rows are strip neighbours and never pay. */
 static slot_result_t classify(const slot_sym_t s[SLOT_NREELS])
 {
-    int cnt[6] = { 0 };
+    if (s[0] == s[1] && s[1] == s[2]) {
+        switch (s[0]) {
+        case SYM_SEVEN:  return SLOT_JACKPOT;
+        case SYM_BAR:    return SLOT_BIG_WIN;
+        case SYM_BELL:
+        case SYM_CHERRY: return SLOT_WIN;
+        default: break;             /* three lemons/oranges pay nothing */
+        }
+    }
+    int cherries = 0;
     for (int i = 0; i < SLOT_NREELS; i++)
-        cnt[s[i]]++;
+        cherries += (s[i] == SYM_CHERRY);
+    return cherries >= 2 ? SLOT_SMALL_WIN : SLOT_LOSS;
+}
 
-    if (cnt[SYM_SEVEN] >= 4)
-        return SLOT_JACKPOT;
-    if (cnt[SYM_BAR] >= 4)
-        return SLOT_BIG_WIN;
-    if (cnt[SYM_BELL] >= 4 || cnt[SYM_CHERRY] >= 4)
-        return SLOT_WIN;
-    if (cnt[SYM_CHERRY] == 3)
-        return SLOT_SMALL_WIN;
-    return SLOT_LOSS;               /* 4+ lemons/oranges pay nothing */
+/* 3x3 reel window; row 1 is the payline. */
+static void window_print(FILE *f, slot_sym_t w[3][SLOT_NREELS])
+{
+    fputs("┌──────────┬──────────┬──────────┐\n", f);
+    for (int row = 0; row < 3; row++) {
+        if (row)
+            fputs("├──────────┼──────────┼──────────┤\n", f);
+        for (int i = 0; i < SLOT_NREELS; i++) {
+            const char *name = SYM_NAME[w[row][i]];
+            int len = (int)strlen(name);
+            int left = (10 - len) / 2;
+            fprintf(f, "│%*s%s%*s", left, "", name, 10 - left - len, "");
+        }
+        fputs(row == 1 ? "│ <- PAYLINE\n" : "│\n", f);
+    }
+    fputs("└──────────┴──────────┴──────────┘\n", f);
 }
 
 int slots_run(const cli_t *cli, rng_t *rng)
@@ -109,11 +108,17 @@ int slots_run(const cli_t *cli, rng_t *rng)
     long counts[5] = { 0 };
 
     for (long it = 0; it < cli->iterations; it++) {
-        slot_sym_t s[SLOT_NREELS];
+        slot_sym_t win3[3][SLOT_NREELS];
         for (int i = 0; i < SLOT_NREELS; i++) {
-            int stop = (int)rng_below(rng, (uint32_t)REELS[i].len);
-            s[i] = REELS[i].strip[stop];
+            int len = REELS[i].len;
+            /* one stop per reel; neighbours come from the circular strip,
+             * consuming no extra randomness */
+            int stop = (int)rng_below(rng, (uint32_t)len);
+            win3[0][i] = REELS[i].strip[(stop - 1 + len) % len];
+            win3[1][i] = REELS[i].strip[stop];
+            win3[2][i] = REELS[i].strip[(stop + 1) % len];
         }
+        const slot_sym_t *s = win3[1];      /* the payline */
         slot_result_t r = classify(s);
         counts[r]++;
 
@@ -122,6 +127,22 @@ int slots_run(const cli_t *cli, rng_t *rng)
 
         if (cli->json) {
             printf("{\"game\":\"slots\",\"reels\":[");
+            for (int i = 0; i < SLOT_NREELS; i++) {
+                if (i)
+                    printf(",");
+                json_string(stdout, SYM_NAME[s[i]]);
+            }
+            printf("],\"window\":[");
+            for (int row = 0; row < 3; row++) {
+                printf("%s[", row ? "," : "");
+                for (int i = 0; i < SLOT_NREELS; i++) {
+                    if (i)
+                        printf(",");
+                    json_string(stdout, SYM_NAME[win3[row][i]]);
+                }
+                printf("]");
+            }
+            printf("],\"payline\":[");
             for (int i = 0; i < SLOT_NREELS; i++) {
                 if (i)
                     printf(",");
@@ -139,9 +160,8 @@ int slots_run(const cli_t *cli, rng_t *rng)
                 printf("%s ", SYM_NAME[s[i]]);
             printf(" %s\n", RESULT_WORD[r]);
         } else {
-            for (int i = 0; i < SLOT_NREELS; i++)
-                printf("%s[ %s ]", i ? " " : "", SYM_NAME[s[i]]);
-            printf("\n\n%s\n", RESULT_WORD[r]);
+            window_print(stdout, win3);
+            printf("\n%s\n", RESULT_WORD[r]);
             if (r != SLOT_LOSS)
                 printf("Payout: %s\n", RESULT_PAYOUT[r]);
         }
@@ -177,12 +197,14 @@ int slots_run(const cli_t *cli, rng_t *rng)
 
 void slots_list_bets(void)
 {
-    puts("slots: 6-reel slot machine, single payline, one spin per round");
+    puts("slots: 3 reels, 3x3 visible window, single middle payline");
     puts("takes no bets; payouts are informational only:");
-    puts("  4+ SEVEN       100:1  JACKPOT");
-    puts("  4+ BAR          20:1  BIG_WIN");
-    puts("  4+ BELL         10:1  WIN");
-    puts("  4+ CHERRY       10:1  WIN");
-    puts("  3 CHERRY         2:1  SMALL_WIN");
-    puts("  anything else      -  LOSS");
+    puts("  SEVEN  SEVEN  SEVEN    100:1  JACKPOT");
+    puts("  BAR    BAR    BAR       20:1  BIG_WIN");
+    puts("  BELL   BELL   BELL      10:1  WIN");
+    puts("  CHERRY CHERRY CHERRY    10:1  WIN");
+    puts("  any two CHERRY           2:1  SMALL_WIN");
+    puts("  anything else              -  LOSS");
+    puts("only the middle row pays; top/bottom rows are the adjacent");
+    puts("strip positions shown for context");
 }

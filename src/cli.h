@@ -36,6 +36,7 @@ typedef struct cli {
     bool     quiet;
     bool     json;
     bool     stats;
+    bool     trainer;           /* interactive strategy trainer (videopoker) */
     bool     seeded;
     uint64_t seed;
     long     iterations;        /* >= 1, default 1 */

@@ -26,7 +26,7 @@ const game_t GAMES[] = {
     { "blackjack", "blackjack (single deck, S17)", blackjack_run,
                                                    blackjack_list_bets },
     { "craps",     "craps (pass-line rounds)", craps_run,   craps_list_bets },
-    { "slots",     "6-reel slot machine",     slots_run,    slots_list_bets },
+    { "slots",     "3-reel slot machine (3x3 window)", slots_run, slots_list_bets },
     { "videopoker","Jacks or Better video poker", videopoker_run,
                                                   videopoker_list_bets },
     { "war",       "casino war (planned)",    NULL, NULL },
@@ -59,6 +59,7 @@ static void global_usage(FILE *f)
         "  --iterations N  play N rounds\n"
         "  --stats         summary statistics instead of per-round output\n"
         "  --runs N        shorthand for --iterations N --stats\n"
+        "  --trainer       interactive strategy trainer (videopoker only)\n"
         "\n"
         "games:\n");
     for (int i = 0; i < NGAMES; i++)
@@ -122,6 +123,11 @@ int main(int argc, char **argv)
     }
     if (!game->run) {
         fprintf(stderr, "%s: not implemented yet\n", game->name);
+        return 2;
+    }
+    if (cli.trainer && strcmp(game->name, "videopoker") != 0) {
+        fprintf(stderr, "%s: --trainer is only available for videopoker\n",
+                game->name);
         return 2;
     }
 
