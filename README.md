@@ -15,12 +15,21 @@ Do not treat this project as a production system, an authoritative statement
 of casino rules or odds, or software suitable for real-money gambling. Review,
 test, and validate any material before relying on it.
 
-## Build and test
+## Build
 
-Requires a C11 compiler and `make`.
+Requires a C11 compiler and `make`. The graphical frontends use raylib. The
+build prefers a system raylib discovered through `pkg-config`, then falls back
+to the vendored raylib library in `vendor/raylib`. If neither is available,
+the command-line games are still built.
 
 ```sh
 make
+./casino --help
+```
+
+Run the regression tests with:
+
+```sh
 make test
 ```
 
@@ -32,25 +41,52 @@ make clean
 
 ## Install on Linux
 
-The included installer builds the program, installs `casino`, creates
-game-name symlinks in `/usr/local/bin`, and installs the GUI assets under
-`/usr/local/share/casino/Assets`.  The installed GUI uses that data directory,
-so it works from any current directory:
+The installer builds and installs the game, its command aliases, and all GUI
+assets:
 
 ```sh
 sudo ./install.sh
 ```
 
-To install without elevated privileges:
+The default layout is:
+
+```text
+/usr/local/bin/casino
+/usr/local/bin/{roulette,blackjack,videopoker,...}
+/usr/local/share/casino/Assets/
+```
+
+Assets are data files rather than executables, so they belong under
+`share/casino`. The installer builds that location into the installed binary;
+the GUI can therefore find its cards, fonts, and sounds regardless of the
+directory from which the game is launched.
+
+To install for only the current user, without `sudo`:
 
 ```sh
 ./install.sh --prefix "$HOME/.local"
 ```
 
-For distribution-package staging, use `DESTDIR` (for example,
-`DESTDIR=/tmp/package-root ./install.sh --prefix /usr`).
+Make sure `$HOME/.local/bin` is on `PATH`, then run `casino`, `blackjack`,
+`videopoker`, or another installed game name directly.
+
+To use another location:
+
+```sh
+./install.sh --prefix /opt/casino
+```
+
+For distribution-package staging, use `DESTDIR`. `DESTDIR` changes only the
+temporary staging root; the final runtime asset path is still based on
+`--prefix`:
+
+```sh
+DESTDIR=/tmp/package-root ./install.sh --prefix /usr
+```
 
 ## Usage
+
+Games can be selected as the first argument to `casino`:
 
 ```sh
 ./casino --help
@@ -62,31 +98,73 @@ For distribution-package staging, use `DESTDIR` (for example,
 ./casino blackjack --seed 1 hit stand
 ```
 
+After running `make symlinks` or installing the project, each game can also be
+called by name:
+
+```sh
+roulette --seed 42 red
+blackjack hit stand
+```
+
 Useful options:
 
 - `--seed N` makes a run reproducible.
 - `--iterations N` plays multiple rounds.
+- `--runs N` is shorthand for `--iterations N --stats`.
 - `--stats` prints a summary instead of each round.
 - `--quiet` prints compact output.
 - `--json` emits newline-delimited JSON.
 - `--list-bets` shows supported bets or actions for a game.
 
 `blackjack` accepts scripted actions (`hit`, `stand`, or `double`), or runs
-interactively when no actions are supplied. The implementation uses one deck
-and dealer-stands-on-soft-17 rules.
+interactively when no actions are supplied. It uses a six-deck shoe with the
+dealer standing on soft 17.
+
+## Graphical games
+
+Raylib builds provide graphical frontends for video poker, baccarat,
+blackjack, and Ride the Bus:
+
+```sh
+casino videopoker --gui
+casino baccarat --gui
+casino blackjack --gui
+casino ridethebus --gui
+```
+
+Video poker also has a terminal trainer and a graphical optimal-play mode.
+Blackjack has a graphical Hi-Lo counting trainer:
+
+```sh
+casino videopoker --trainer
+casino videopoker --gui --optimal
+casino blackjack --gui --counting
+```
 
 ## Implemented and planned games
 
-Implemented: roulette, coin flip, generic dice, Punto Banco baccarat, and
-single-deck blackjack.
+Implemented:
 
-The command list also includes placeholder entries for sic bo, craps, slots,
-video poker, casino war, three-card poker, chuck-a-luck, and big six. Those
-entries deliberately report that they are not implemented.
+- European roulette
+- Coin flip
+- Generic NdM dice
+- Punto Banco baccarat
+- Six-deck blackjack
+- Pass-line craps
+- Three-reel slots
+- Jacks or Better video poker
+- Ride the Bus
+
+Sic bo, casino war, three-card poker, chuck-a-luck, and big six are currently
+placeholders and report that they are not implemented.
 
 ## Project layout
 
 - `src/main.c` — game selection and program entry
 - `src/cli.c` — shared command-line parsing
 - `src/games/` — game implementations
+- `src/gui/` — shared raylib UI and graphical game frontends
+- `Assets/` — playing cards, fonts, sounds, and their licences
+- `vendor/raylib/` — vendored raylib headers and library
+- `install.sh` — Linux installation and asset deployment
 - `tests/run.sh` — end-to-end regression tests
