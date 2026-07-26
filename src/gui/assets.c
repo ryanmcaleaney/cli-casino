@@ -2,7 +2,12 @@
 
 #include <stdio.h>
 
-#define ASSET_ROOT "Assets"
+/* Set by the Makefile.  install.sh supplies PREFIX/share/casino/Assets so
+ * the GUI does not depend on the caller's current working directory. */
+#ifndef CASINO_ASSET_ROOT
+#define CASINO_ASSET_ROOT "Assets"
+#endif
+#define ASSET_ROOT CASINO_ASSET_ROOT
 #define CARD_DIR   ASSET_ROOT "/kenney_playing-cards-pack/PNG/Cards (large)"
 #define FONT_DIR   ASSET_ROOT "/Fonts/pixel_operator"
 #define AUDIO_DIR  ASSET_ROOT "/Audio"
@@ -14,13 +19,6 @@
 
 /* Glyph size the pixel fonts are rasterised at; draw at multiples. */
 #define FONT_BAKE_PX 32
-
-const char *asset_path(const char *rel)
-{
-    static char buf[512];
-    snprintf(buf, sizeof buf, "%s/%s", ASSET_ROOT, rel);
-    return buf;
-}
 
 /* card_t -> Kenney sprite filename, e.g. "card_spades_A.png",
  * "card_hearts_02.png", "card_clubs_10.png". */
@@ -86,9 +84,9 @@ static bool load_texture(Texture2D *t, const char *path)
     return true;
 }
 
-bool assets_load(vp_assets_t *a)
+bool assets_load(gui_assets_t *a)
 {
-    *a = (vp_assets_t){ 0 };
+    *a = (gui_assets_t){ 0 };
 
     for (int r = 1; r <= 13; r++) {
         for (int s = 0; s < 4; s++) {
@@ -118,7 +116,7 @@ bool assets_load(vp_assets_t *a)
     return true;
 }
 
-void assets_unload(vp_assets_t *a)
+void assets_unload(gui_assets_t *a)
 {
     for (int i = 0; i < 52; i++)
         if (a->cards[i].id)
@@ -133,10 +131,10 @@ void assets_unload(vp_assets_t *a)
         UnloadSound(a->snd_deal);
     if (a->snd_click.frameCount)
         UnloadSound(a->snd_click);
-    *a = (vp_assets_t){ 0 };
+    *a = (gui_assets_t){ 0 };
 }
 
-const Texture2D *asset_card(const vp_assets_t *a, card_t c)
+const Texture2D *asset_card(const gui_assets_t *a, card_t c)
 {
     return &a->cards[card_index(c)];
 }

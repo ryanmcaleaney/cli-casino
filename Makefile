@@ -2,6 +2,11 @@ CC      ?= cc
 CFLAGS  ?= -std=c11 -O2 -Wall -Wextra -Wpedantic
 CPPFLAGS += -Isrc
 
+# GUI data files.  Development builds use the checked-in Assets directory;
+# install.sh overrides this with PREFIX/share/casino/Assets.
+ASSET_ROOT ?= Assets
+CPPFLAGS += -DCASINO_ASSET_ROOT=\"$(ASSET_ROOT)\"
+
 SRC   := $(wildcard src/*.c) $(wildcard src/games/*.c)
 
 # Optional raylib GUI: prefer the system raylib (pkg-config), fall back to
@@ -31,7 +36,15 @@ all: $(BIN)
 $(BIN): $(OBJ)
 	$(CC) $(CFLAGS) -o $@ $(OBJ) $(GUI_LIBS)
 
-build/%.o: src/%.c
+# Recompile if ASSET_ROOT changes (for example after install.sh builds an
+# installed binary, then a developer runs a normal `make` again).
+ASSET_STAMP := build/.asset-root-$(subst /,_,$(ASSET_ROOT))
+
+$(ASSET_STAMP):
+	@mkdir -p $(dir $@)
+	@touch $@
+
+build/%.o: src/%.c $(ASSET_STAMP)
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
 

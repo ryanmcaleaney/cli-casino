@@ -32,8 +32,10 @@ make clean
 
 ## Install on Linux
 
-The included installer builds the program, installs `casino`, and creates
-game-name symlinks in `/usr/local/bin`:
+The included installer builds the program, installs `casino`, creates
+game-name symlinks in `/usr/local/bin`, and installs the GUI assets under
+`/usr/local/share/casino/Assets`.  The installed GUI uses that data directory,
+so it works from any current directory:
 
 ```sh
 sudo ./install.sh

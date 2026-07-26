@@ -15,7 +15,7 @@
 #include "vpsolve.h"
 
 #ifdef CASINO_GUI
-#include "gui/gui.h"
+#include "gui/videopoker_gui.h"
 #endif
 
 /* Jacks or Better pay ladder, ordered low to high. */
