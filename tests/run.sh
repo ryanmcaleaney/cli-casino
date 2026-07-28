@@ -842,6 +842,207 @@ expect_grep "vp symlink invocation" '"game":"videopoker"' \
     sh -c "./videopoker hold:none --seed 1 --json"
 rm -f videopoker
 
+# --- videopoker --find-seed (deterministic seed search) ------------------
+# initial deal is the default target
+expect_exit "vp find-seed found exits 0" 0 $C videopoker --find-seed two_pair
+expect_grep "vp find-seed target line" "^Target: TWO_PAIR$" \
+    $C videopoker --find-seed two_pair
+expect_grep "vp find-seed mode line"   "^Mode: initial deal$" \
+    $C videopoker --find-seed two_pair
+expect_grep "vp find-seed seed line"   "^Seed: [0-9][0-9]*$" \
+    $C videopoker --find-seed two_pair
+expect_grep "vp find-seed hand line"   "^Hand: [0-9AJQK]" \
+    $C videopoker --find-seed two_pair
+
+# every documented category name is accepted (fast ones searched for real)
+for cat in high_card low_pair jacks_or_better two_pair three_of_a_kind \
+           straight flush full_house four_of_a_kind; do
+    expect_exit "vp find-seed $cat" 0 $C videopoker --find-seed $cat --quiet
+done
+expect_exit "vp find-seed straight_flush" 0 \
+    $C videopoker --find-seed straight_flush --quiet
+expect_exit "vp find-seed royal_flush" 0 \
+    $C videopoker --find-seed royal_flush --quiet
+# aliases
+expect_grep "vp find-seed alias royal" "category=ROYAL_FLUSH" \
+    $C videopoker --find-seed royal --quiet
+expect_grep "vp find-seed alias quads" "category=FOUR_OF_A_KIND" \
+    $C videopoker --find-seed quads --quiet
+expect_grep "vp find-seed alias trips" "category=THREE_OF_A_KIND" \
+    $C videopoker --find-seed trips --quiet
+expect_grep "vp find-seed name is case insensitive" "category=FLUSH" \
+    $C videopoker --find-seed FLUSH --quiet
+
+# a found seed replays through ordinary play: same hand, same category
+fs=$($C videopoker --find-seed full_house --seed-end 100000 --quiet |
+     sed 's/^seed=\([0-9]*\).*/\1/')
+expect_grep "vp found seed replays as the same category" "^FULL_HOUSE$" \
+    sh -c "$C videopoker --seed $fs hold:all --quiet"
+a=$($C videopoker --find-seed full_house --seed-end 100000 --json |
+    sed 's/.*"initial":\(\[[^]]*\]\).*/\1/')
+b=$($C videopoker --seed $fs hold:all --json |
+    sed 's/.*"initial_hand":\(\[[^]]*\]\).*/\1/')
+[ "$a" = "$b" ] && [ -n "$a" ] && ok || \
+    bad "vp found seed deals the reported hand (search $a, play $b)"
+
+# the reported seed is the FIRST match, and the range includes both ends
+expect_exit "vp find-seed range stops below the hit" 1 \
+    $C videopoker --find-seed full_house --seed-end $((fs-1))
+expect_exit "vp find-seed end is inclusive" 0 \
+    $C videopoker --find-seed full_house --seed-start $fs --seed-end $fs
+expect_grep "vp find-seed start is inclusive" "^seed=$fs " \
+    $C videopoker --find-seed full_house --seed-start $fs --quiet
+nx=$($C videopoker --find-seed full_house --seed-start $((fs+1)) --quiet |
+     sed 's/^seed=\([0-9]*\).*/\1/')
+[ "$nx" -gt "$fs" ] && ok || bad "vp find-seed resumes above the range start"
+
+# no match: distinct exit status, and the searched range is reported
+expect_exit "vp find-seed no match exits 1" 1 \
+    $C videopoker --find-seed royal_flush --seed-end 100
+expect_grep "vp find-seed no match message" \
+    "^No ROYAL_FLUSH seed found from 0 through 100\.$" \
+    $C videopoker --find-seed royal_flush --seed-end 100
+expect_grep "vp find-seed no match quiet" \
+    "^found=0 category=ROYAL_FLUSH mode=initial_deal seed_start=0 seed_end=100$" \
+    $C videopoker --find-seed royal_flush --seed-end 100 --quiet
+expect_grep "vp find-seed no match json" '"found":false' \
+    $C videopoker --find-seed royal_flush --seed-end 100 --json
+
+# machine output
+expect_grep "vp find-seed quiet line" \
+    "^seed=[0-9][0-9]* category=TWO_PAIR mode=initial_deal$" \
+    $C videopoker --find-seed two_pair --quiet
+expect_grep "vp find-seed json shape" \
+    '^{"game":"videopoker","search":"seed","target":"TWO_PAIR","mode":"initial_deal","seed":[0-9]*,"initial":\["' \
+    $C videopoker --find-seed two_pair --json
+expect_grep "vp find-seed json result" '"result":"TWO_PAIR","found":true}$' \
+    $C videopoker --find-seed two_pair --json
+expect_grep "vp find-seed json hold mask" '"hold_mask":31' \
+    $C videopoker --find-seed two_pair --json
+
+# deterministic: the same range always answers the same
+a=$($C videopoker --find-seed flush --seed-end 50000 --json)
+b=$($C videopoker --find-seed flush --seed-end 50000 --json)
+[ "$a" = "$b" ] && ok || bad "vp find-seed repeats identically"
+
+# --after-draw: the solver's hold, then the draw, then the match
+expect_grep "vp after-draw mode line" "^Mode: optimal draw$" \
+    $C videopoker --find-seed two_pair --after-draw
+expect_grep "vp after-draw shows the initial hand" "^Initial: [0-9AJQK]" \
+    $C videopoker --find-seed two_pair --after-draw
+expect_grep "vp after-draw mask orientation" \
+    "^Hold mask: [01][01][01][01][01] (positions " \
+    $C videopoker --find-seed two_pair --after-draw
+expect_grep "vp after-draw result line" "^Result: TWO_PAIR$" \
+    $C videopoker --find-seed two_pair --after-draw
+expect_grep "vp after-draw quiet mode word" "mode=after_draw" \
+    $C videopoker --find-seed two_pair --after-draw --quiet
+expect_grep "vp after-draw json mode" '"mode":"after_draw"' \
+    $C videopoker --find-seed two_pair --after-draw --json
+
+# the after-draw hit replays: same seed, same hold, same final hand
+out=$($C videopoker --find-seed two_pair --after-draw)
+ds=$(echo "$out" | sed -n 's/^Seed: \([0-9]*\)$/\1/p')
+dh=$(echo "$out" | sed -n 's/^Hold mask: [01]* (positions \(.*\))$/\1/p')
+df=$(echo "$out" | sed -n 's/^Final: //p')
+rp=$($C videopoker --seed "$ds" hold:"$dh" --json)
+rf=$(echo "$rp" | sed 's/.*"final_hand":\[\([^]]*\)\].*/\1/' | tr -d '"' |
+     tr ',' ' ')
+[ "$rf" = "$df" ] && [ -n "$df" ] && ok || \
+    bad "vp after-draw final hand replays (search '$df', play '$rf')"
+echo "$rp" | grep -q '"category":"TWO_PAIR"' && ok || \
+    bad "vp after-draw replay lands on the same category"
+
+# the hold came from the game's own solver, not from the search
+hand=$(echo "$rp" | sed 's/.*"initial_hand":\[\([^]]*\)\].*/\1/' | tr -d '"' |
+       tr 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' 'abcdefghijklmnopqrstuvwxyz')
+expect_grep "vp after-draw hold is the solver's optimum" "optimal: hold=$dh " \
+    $C videopoker solve:$hand
+
+# --- seed search validation ---------------------------------------------
+expect_exit "vp after-draw needs find-seed"  2 $C videopoker --after-draw
+expect_exit "vp seed-start needs find-seed"  2 $C videopoker --seed-start 5
+expect_exit "vp seed-end needs find-seed"    2 $C videopoker --seed-end 5
+expect_grep "vp after-draw needs find-seed message" \
+    "add --find-seed" $C videopoker --after-draw
+expect_exit "vp find-seed rejects runs"      2 \
+    $C videopoker --find-seed flush --runs 10
+expect_exit "vp find-seed rejects iterations" 2 \
+    $C videopoker --find-seed flush --iterations 10
+expect_exit "vp find-seed rejects stats"     2 \
+    $C videopoker --find-seed flush --stats
+expect_exit "vp find-seed rejects trainer"   2 \
+    $C videopoker --find-seed flush --trainer
+expect_exit "vp find-seed rejects gui"       2 \
+    $C videopoker --find-seed flush --gui
+expect_exit "vp find-seed rejects optimal"   2 \
+    $C videopoker --find-seed flush --optimal
+expect_exit "vp find-seed rejects hold"      2 \
+    $C videopoker --find-seed flush hold:1,3
+expect_exit "vp find-seed rejects deal"      2 \
+    $C videopoker --find-seed flush deal:ah,kh,qh,jh,10h
+expect_exit "vp find-seed rejects bets"      2 $C videopoker --find-seed flush red
+expect_exit "vp find-seed bare option"       2 $C videopoker --find-seed
+expect_exit "vp find-seed unknown category"  2 $C videopoker --find-seed nonsense
+expect_exit "vp find-seed ambiguous pair"    2 $C videopoker --find-seed pair
+expect_grep "vp find-seed lists categories"  "royal_flush" \
+    $C videopoker --find-seed nonsense
+expect_grep "vp find-seed names the bad word" "'nonsense': unknown hand category" \
+    $C videopoker --find-seed nonsense
+expect_exit "vp find-seed inverted range"    2 \
+    $C videopoker --find-seed flush --seed-start 1000 --seed-end 100
+expect_grep "vp find-seed inverted range message" "range is inclusive" \
+    $C videopoker --find-seed flush --seed-start 1000 --seed-end 100
+expect_exit "vp seed-start not a number"     2 \
+    $C videopoker --find-seed flush --seed-start abc
+expect_exit "vp seed-start negative"         2 \
+    $C videopoker --find-seed flush --seed-start -1
+expect_exit "vp seed-end fractional"         2 \
+    $C videopoker --find-seed flush --seed-end 1.5
+expect_exit "vp seed-end overflows"          2 \
+    $C videopoker --find-seed flush --seed-end 99999999999999999999999
+expect_exit "vp seed-start bare"             2 $C videopoker --seed-start
+expect_exit "vp find-seed equals form"       0 \
+    $C videopoker --find-seed=two_pair --quiet
+expect_exit "vp seed-end equals form"        0 \
+    $C videopoker --find-seed=full_house --seed-end=100000 --quiet
+
+# the search belongs to one game
+expect_exit "find-seed rejected blackjack"   2 $C blackjack --find-seed flush
+expect_grep "find-seed rejected message"     \
+    "blackjack: --find-seed is only available for videopoker" \
+    $C blackjack --find-seed flush
+expect_exit "find-seed rejected roulette"    2 $C roulette red --find-seed flush
+expect_exit "after-draw rejected blackjack"  2 $C blackjack s --after-draw
+expect_exit "seed-start rejected roulette"   2 $C roulette red --seed-start 1
+
+# help
+expect_grep "find-seed in global help" "  --find-seed C   find a videopoker seed" $C --help
+expect_grep "after-draw in global help" "  --after-draw    " $C --help
+expect_grep "seed-start in global help" "  --seed-start N  " $C --help
+expect_grep "seed-end in global help"   "  --seed-end N    " $C --help
+expect_grep "vp find-seed example in list-bets" \
+    "videopoker --find-seed royal_flush --after-draw" $C videopoker --list-bets
+expect_grep "vp find-seed range documented" "includes both ends" \
+    $C videopoker --list-bets
+expect_grep "vp find-seed first match documented" "lowest) matching seed" \
+    $C videopoker --list-bets
+expect_grep "vp find-seed determinism documented" "RNG and shuffle" \
+    $C videopoker --list-bets
+expect_grep "vp find-seed mask orientation documented" "position 1 leftmost" \
+    $C videopoker --list-bets
+
+# the search itself: parser, first-match contract, hold/draw reproduction
+# and the inclusive range, against the game's own APIs.  See tests/vpseed.c.
+if ${CC:-cc} -std=c11 -Isrc -o build/vpseed_test tests/vpseed.c \
+        src/games/vpseed.c src/games/videopoker.c src/games/vpsolve.c \
+        src/cardart.c src/cards.c src/cli.c src/output.c src/poker.c \
+        src/rng.c >/dev/null 2>&1; then
+    expect_exit "vp seed search checks" 0 ./build/vpseed_test
+else
+    bad "vp seed search test did not build"
+fi
+
 # --- ASCII card art (CASINO_CARDS=art forces on; piped default is plain) --
 expect_grep "art card border"  "┌─────────┐ ┌─────────┐" \
     env CASINO_CARDS=art $C baccarat player --seed 2

@@ -82,6 +82,12 @@ static void global_usage(FILE *f)
         "  --basic         automatic basic strategy (blackjack only)\n"
         "  --count-bet     Hi-Lo true-count bet ramp "
         "(blackjack --basic only)\n"
+        "  --find-seed C   find a videopoker seed dealing hand category C\n"
+        "  --after-draw    --find-seed: match the hand after the optimal "
+        "draw\n"
+        "  --seed-start N  --find-seed: first seed to search (default 0)\n"
+        "  --seed-end N    --find-seed: last seed to search "
+        "(default 10000000)\n"
         "\n"
         "games:\n");
     for (int i = 0; i < NGAMES; i++)
@@ -170,6 +176,16 @@ int main(int argc, char **argv)
     if (cli.count_bet && strcmp(game->name, "blackjack") != 0) {
         fprintf(stderr, "%s: --count-bet is only available for blackjack\n",
                 game->name);
+        return 2;
+    }
+    /* the seed search knows one game's deal, solver and pay ladder */
+    const char *vponly = cli.find_seed       ? "--find-seed"
+                       : cli.after_draw      ? "--after-draw"
+                       : cli.seed_start_set  ? "--seed-start"
+                       : cli.seed_end_set    ? "--seed-end" : NULL;
+    if (vponly && strcmp(game->name, "videopoker") != 0) {
+        fprintf(stderr, "%s: %s is only available for videopoker\n",
+                game->name, vponly);
         return 2;
     }
     if (cli.gui && strcmp(game->name, "videopoker") != 0 &&

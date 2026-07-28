@@ -77,6 +77,24 @@ static int parse_bet_token(const char *tok, bet_t *b, char *err, size_t errlen)
     return 0;
 }
 
+/*
+ * Strict unsigned 64-bit value: strtoull() happily wraps a negative
+ * number round to a huge one, so the sign is rejected up front.
+ */
+static int parse_u64(const char *s, uint64_t *out)
+{
+    char *end;
+
+    if (*s == '-' || *s == '+' || *s == '\0')
+        return -1;
+    errno = 0;
+    unsigned long long v = strtoull(s, &end, 0);
+    if (end == s || *end != '\0' || errno != 0)
+        return -1;
+    *out = (uint64_t)v;
+    return 0;
+}
+
 static int opt_value(int argc, char **argv, int *i, const char *opt,
                      const char **out, char *err, size_t errlen)
 {
@@ -135,6 +153,37 @@ int cli_parse(int argc, char **argv, cli_t *out, char *err, size_t errlen)
                     return fail(err, errlen,
                                 "--seed: '%s' is not a valid integer", val);
                 out->seeded = true;
+            } else if (strncmp(arg, "--find-seed", 11) == 0 &&
+                       (arg[11] == '\0' || arg[11] == '=')) {
+                if (opt_value(argc, argv, &i, "--find-seed", &val,
+                              err, errlen))
+                    return -1;
+                if (*val == '\0')
+                    return fail(err, errlen,
+                                "--find-seed: %s", "expected a hand category");
+                out->find_seed = val;
+            } else if (strcmp(arg, "--after-draw") == 0) {
+                out->after_draw = true;
+            } else if (strncmp(arg, "--seed-start", 12) == 0 &&
+                       (arg[12] == '\0' || arg[12] == '=')) {
+                if (opt_value(argc, argv, &i, "--seed-start", &val,
+                              err, errlen))
+                    return -1;
+                if (parse_u64(val, &out->seed_start) < 0)
+                    return fail(err, errlen,
+                                "--seed-start: '%s' is not a valid "
+                                "non-negative integer", val);
+                out->seed_start_set = true;
+            } else if (strncmp(arg, "--seed-end", 10) == 0 &&
+                       (arg[10] == '\0' || arg[10] == '=')) {
+                if (opt_value(argc, argv, &i, "--seed-end", &val,
+                              err, errlen))
+                    return -1;
+                if (parse_u64(val, &out->seed_end) < 0)
+                    return fail(err, errlen,
+                                "--seed-end: '%s' is not a valid "
+                                "non-negative integer", val);
+                out->seed_end_set = true;
             } else if (strncmp(arg, "--iterations", 12) == 0 &&
                        (arg[12] == '\0' || arg[12] == '=')) {
                 if (opt_value(argc, argv, &i, "--iterations", &val,

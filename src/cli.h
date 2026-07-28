@@ -45,6 +45,15 @@ typedef struct cli {
     bool     seeded;
     uint64_t seed;
     long     iterations;        /* >= 1, default 1 */
+    /* seed search (videopoker): --find-seed CATEGORY [--after-draw]
+     * [--seed-start N] [--seed-end N].  The range is inclusive at both
+     * ends; the game supplies the defaults for anything not set here. */
+    const char *find_seed;      /* category text, NULL when not searching */
+    bool     after_draw;        /* match the hand after the optimal draw */
+    bool     seed_start_set;
+    bool     seed_end_set;
+    uint64_t seed_start;
+    uint64_t seed_end;
 } cli_t;
 
 /*

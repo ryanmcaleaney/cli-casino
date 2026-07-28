@@ -12,6 +12,7 @@
 #include "cards.h"
 #include "output.h"
 #include "poker.h"
+#include "vpseed.h"
 #include "vpsolve.h"
 
 #ifdef CASINO_GUI
@@ -92,6 +93,54 @@ int vp_front_payout(int cat)
 const char *vp_front_token(int cat)
 {
     return (cat >= 0 && cat < VP_NCATS) ? VP_TOKEN[cat] : "?";
+}
+
+const char *vp_front_name(int cat)
+{
+    return (cat >= 0 && cat < VP_NCATS) ? VP_JSON[cat] : "?";
+}
+
+/* Short spellings, only where they name exactly one category: "pair" is
+ * deliberately absent, it could be either half of the pay ladder. */
+static const struct { const char *word; vp_cat_t cat; } VP_ALIAS[] = {
+    { "royal", VP_ROYAL_FLUSH },
+    { "quads", VP_FOUR_OF_A_KIND },
+    { "trips", VP_THREE_OF_A_KIND },
+};
+#define VP_NALIAS ((int)(sizeof VP_ALIAS / sizeof VP_ALIAS[0]))
+
+int vp_front_parse_category(const char *s)
+{
+    /* VP_TOKEN is VP_JSON in capitals, so one case-insensitive pass takes
+     * both spellings */
+    for (int i = 0; i < VP_NCATS; i++)
+        if (strcasecmp(s, VP_JSON[i]) == 0)
+            return i;
+    for (int i = 0; i < VP_NALIAS; i++)
+        if (strcasecmp(s, VP_ALIAS[i].word) == 0)
+            return (int)VP_ALIAS[i].cat;
+    return -1;
+}
+
+void vp_front_deal(rng_t *rng, shoe_t *shoe, card_t hand[5])
+{
+    shoe_init(shoe, 1);
+    shoe_shuffle(shoe, rng);
+    for (int i = 0; i < 5; i++)
+        hand[i] = shoe_draw(shoe);
+}
+
+bool vp_front_draw(shoe_t *shoe, uint32_t hold, card_t hand[5])
+{
+    bool drew = false;
+
+    for (int i = 0; i < 5; i++) {
+        if (!(hold & (1u << i))) {
+            hand[i] = shoe_draw(shoe);
+            drew = true;
+        }
+    }
+    return drew;
 }
 
 void vp_front_describe(const card_t hand[5], char *buf, size_t len)
@@ -351,6 +400,160 @@ static int solve_print(const card_t hand[5])
     return 0;
 }
 
+/* ---- seed search (--find-seed) ----------------------------------------- */
+
+/* Inclusive range default: seeds 0 through 10,000,000. */
+#define VP_SEED_END_DEFAULT 10000000ull
+#define VP_SEED_PROGRESS    1000000ull
+
+static void seed_progress(uint64_t checked, void *ctx)
+{
+    (void)ctx;
+    fprintf(stderr, "checked %llu seeds...\n", (unsigned long long)checked);
+}
+
+/* Five bits, card 1 leftmost: "11110" keeps positions 1-4. */
+static const char *mask_bits(uint32_t mask, char buf[6])
+{
+    for (int i = 0; i < 5; i++)
+        buf[i] = (mask & (1u << i)) ? '1' : '0';
+    buf[5] = '\0';
+    return buf;
+}
+
+static void seed_cards(FILE *f, const card_t hand[5], uint32_t mask)
+{
+    char cb[8];
+    bool any = false;
+
+    for (int i = 0; i < 5; i++) {
+        if (mask & (1u << i)) {
+            card_name(hand[i], cb, sizeof cb);
+            fprintf(f, "%s%s", any ? " " : "", cb);
+            any = true;
+        }
+    }
+    fprintf(f, "%s\n", any ? "" : "none");
+}
+
+static int seed_bad_category(const char *text)
+{
+    fprintf(stderr, "videopoker: '%s': unknown hand category\n", text);
+    fprintf(stderr, "categories:");
+    for (int i = VP_NCATS - 1; i >= 0; i--)
+        fprintf(stderr, " %s", VP_JSON[i]);
+    fprintf(stderr, "\naliases: royal quads trips\n");
+    return 2;
+}
+
+static int seed_search(const cli_t *cli)
+{
+    vp_seed_hit_t hit;
+    vp_seed_report_t rep = { VP_SEED_PROGRESS, seed_progress, NULL };
+    char bits[6], pos[16];
+
+    if (!cli->find_seed) {
+        const char *opt = cli->after_draw ? "--after-draw"
+                        : cli->seed_start_set ? "--seed-start" : "--seed-end";
+        fprintf(stderr, "videopoker: %s only applies to a seed search; "
+                        "add --find-seed CATEGORY\n", opt);
+        return 2;
+    }
+    if (cli->gui || cli->trainer || cli->optimal) {
+        fprintf(stderr, "videopoker: --find-seed is a non-interactive "
+                        "search (no --gui, --trainer or --optimal)\n");
+        return 2;
+    }
+    if (cli->stats || cli->iterations != 1) {
+        fprintf(stderr, "videopoker: --find-seed searches seeds, it does "
+                        "not play rounds (no --runs, --iterations or "
+                        "--stats)\n");
+        return 2;
+    }
+    if (cli->nbets != 0) {
+        fprintf(stderr, "videopoker: --find-seed takes no other arguments "
+                        "(got '%s')\n", cli->bets[0].raw);
+        return 2;
+    }
+
+    int target = vp_front_parse_category(cli->find_seed);
+    if (target < 0)
+        return seed_bad_category(cli->find_seed);
+
+    uint64_t start = cli->seed_start;
+    uint64_t end   = cli->seed_end_set ? cli->seed_end : VP_SEED_END_DEFAULT;
+    if (start > end) {
+        fprintf(stderr, "videopoker: --seed-start %llu is above --seed-end "
+                        "%llu (the range is inclusive)\n",
+                (unsigned long long)start, (unsigned long long)end);
+        return 2;
+    }
+
+    bool machine = cli->quiet || cli->json;
+    bool found = vp_seed_find(target, cli->after_draw, start, end,
+                              machine ? NULL : &rep, &hit);
+    const char *mode_word = cli->after_draw ? "after_draw" : "initial_deal";
+
+    if (!found) {
+        if (cli->json) {
+            printf("{\"game\":\"videopoker\",\"search\":\"seed\","
+                   "\"target\":");
+            json_string(stdout, VP_TOKEN[target]);
+            printf(",\"mode\":\"%s\",\"seed_start\":%llu,\"seed_end\":%llu,"
+                   "\"found\":false}\n", mode_word,
+                   (unsigned long long)start, (unsigned long long)end);
+        } else if (cli->quiet) {
+            printf("found=0 category=%s mode=%s seed_start=%llu "
+                   "seed_end=%llu\n", VP_TOKEN[target], mode_word,
+                   (unsigned long long)start, (unsigned long long)end);
+        } else {
+            printf("No %s seed found from %llu through %llu.\n",
+                   VP_TOKEN[target], (unsigned long long)start,
+                   (unsigned long long)end);
+        }
+        return 1;
+    }
+
+    if (cli->json) {
+        printf("{\"game\":\"videopoker\",\"search\":\"seed\",\"target\":");
+        json_string(stdout, VP_TOKEN[target]);
+        printf(",\"mode\":\"%s\",\"seed\":%llu,\"initial\":", mode_word,
+               (unsigned long long)hit.seed);
+        hand_json(stdout, hit.initial);
+        printf(",\"hold_mask\":%u,\"final\":", hit.hold);
+        hand_json(stdout, hit.final5);
+        printf(",\"result\":");
+        json_string(stdout, VP_TOKEN[hit.cat]);
+        printf(",\"found\":true}\n");
+    } else if (cli->quiet) {
+        printf("seed=%llu category=%s mode=%s\n",
+               (unsigned long long)hit.seed, VP_TOKEN[hit.cat], mode_word);
+    } else {
+        printf("Target: %s\n", VP_TOKEN[target]);
+        printf("Mode: %s\n", cli->after_draw ? "optimal draw"
+                                             : "initial deal");
+        printf("Seed: %llu\n", (unsigned long long)hit.seed);
+        if (!cli->after_draw) {
+            printf("Hand: ");
+            seed_cards(stdout, hit.initial, 0x1fu);
+        } else {
+            printf("Initial: ");
+            seed_cards(stdout, hit.initial, 0x1fu);
+            /* bit per card, position 1 leftmost - the same orientation
+             * as hold:1,2 and as the JSON hold_mask value */
+            printf("Hold mask: %s (positions %s)\n",
+                   mask_bits(hit.hold, bits),
+                   mask_positions(hit.hold, pos, sizeof pos));
+            printf("Held: ");
+            seed_cards(stdout, hit.initial, hit.hold);
+            printf("Final: ");
+            seed_cards(stdout, hit.final5, 0x1fu);
+            printf("Result: %s\n", VP_TOKEN[hit.cat]);
+        }
+    }
+    return 0;
+}
+
 /* ---- interactive strategy trainer -------------------------------------- */
 
 static volatile sig_atomic_t trainer_stop = 0;
@@ -382,10 +585,7 @@ static int trainer_run(const cli_t *cli, rng_t *rng)
         shoe_t shoe;
         bool held[5] = { false };
 
-        shoe_init(&shoe, 1);
-        shoe_shuffle(&shoe, rng);
-        for (int i = 0; i < 5; i++)
-            hand[i] = shoe_draw(&shoe);
+        vp_front_deal(rng, &shoe, hand);
 
         printf("\n");
         print_hand(stdout, hand);
@@ -443,6 +643,12 @@ int videopoker_run(const cli_t *cli, rng_t *rng)
     bool scripted = false, fixed_deal = false, solve_mode = false;
     bool held[5] = { false };
     card_t fixed[5];
+
+    /* the search runs its own seeds and plays no round here, so it is
+     * settled before any of the normal modes are considered */
+    if (cli->find_seed || cli->after_draw ||
+        cli->seed_start_set || cli->seed_end_set)
+        return seed_search(cli);
 
     if (cli->gui) {
         if (cli->nbets != 0 || cli->quiet || cli->json || cli->stats ||
@@ -557,10 +763,7 @@ int videopoker_run(const cli_t *cli, rng_t *rng)
             for (int i = 0; i < 5; i++)
                 held[i] = true;
         } else {
-            shoe_init(&shoe, 1);
-            shoe_shuffle(&shoe, rng);
-            for (int i = 0; i < 5; i++)
-                initial[i] = shoe_draw(&shoe);
+            vp_front_deal(rng, &shoe, initial);
             memcpy(final5, initial, sizeof final5);
         }
 
@@ -574,13 +777,11 @@ int videopoker_run(const cli_t *cli, rng_t *rng)
         }
 
         if (!fixed_deal) {
-            bool drew = false;
-            for (int i = 0; i < 5; i++) {
-                if (!held[i]) {
-                    final5[i] = shoe_draw(&shoe);
-                    drew = true;
-                }
-            }
+            uint32_t hold = 0;
+            for (int i = 0; i < 5; i++)
+                if (held[i])
+                    hold |= 1u << i;
+            bool drew = vp_front_draw(&shoe, hold, final5);
             if (display || interactive) {
                 FILE *f = display ? stdout : disp;
                 fprintf(f, "\nHeld:");
@@ -689,6 +890,38 @@ void videopoker_list_bets(void)
     puts("  videopoker --gui           graphical video poker machine");
     puts("  videopoker --gui --optimal graphical trainer: live "
          "optimal/sub-optimal feedback");
+    puts("seed search (--find-seed CATEGORY): brute-force deterministic "
+         "seeds");
+    puts("  videopoker --find-seed royal_flush");
+    puts("  videopoker --find-seed four_of_a_kind --seed-end 5000000");
+    puts("  videopoker --find-seed royal_flush --after-draw");
+    puts("  videopoker --find-seed full_house --seed-start 100000 "
+         "--seed-end 200000");
+    puts("  categories: the names above in lower case "
+         "(royal_flush ... high_card),");
+    puts("              plus the aliases royal, quads and trips");
+    puts("  the search looks at the initial five-card deal by default;");
+    puts("  --after-draw instead judges the hand left after the built-in "
+         "optimal");
+    puts("  solver picks the hold and the replacements are drawn, which "
+         "costs a");
+    puts("  full 32-mask solve per seed and is therefore far slower");
+    puts("  the first (lowest) matching seed in the range is reported; "
+         "the range");
+    puts("  --seed-start N .. --seed-end N includes both ends "
+         "(default 0..10000000)");
+    puts("  the hold is printed as five bits with position 1 leftmost, "
+         "next to the");
+    puts("  positions themselves; JSON reports the same mask as a number "
+         "(bit i set");
+    puts("  = position i+1 kept), which is the orientation hold:1,3 uses");
+    puts("  a found seed replays with 'videopoker --seed N' (add the same "
+         "hold:...");
+    puts("  for an --after-draw seed); exit 0 = found, 1 = no match in "
+         "the range");
+    puts("  results are deterministic for this RNG and shuffle: changing "
+         "either");
+    puts("  changes which seeds produce which hands");
     puts("payouts (informational, 1-unit bet):");
     puts("  ROYAL_FLUSH 250   STRAIGHT_FLUSH 50   FOUR_OF_A_KIND 25");
     puts("  FULL_HOUSE 9      FLUSH 6             STRAIGHT 4");

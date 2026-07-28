@@ -23,8 +23,25 @@ void videopoker_list_bets(void);
 int         vp_front_category(const card_t hand[5]);
 int         vp_front_payout(int cat);           /* per 1-unit bet */
 const char *vp_front_token(int cat);            /* e.g. "ROYAL_FLUSH" */
+const char *vp_front_name(int cat);             /* e.g. "royal_flush" */
+/*
+ * Category text (either spelling, plus the short aliases royal/quads/
+ * trips) to a category index; -1 when the text names no category.  This
+ * is the only text-to-category conversion in the project.
+ */
+int         vp_front_parse_category(const char *s);
 /* Human name of a hand, e.g. "Pair of Jacks", "Flush". */
 void        vp_front_describe(const card_t hand[5], char *buf, size_t len);
+
+/*
+ * The game's own deal and draw.  Every frontend goes through these, so a
+ * seed always produces the same hand from the same shoe no matter who is
+ * playing it: one fresh single-deck shoe, shuffled, five cards off the
+ * top, then replacements in position order.
+ */
+void        vp_front_deal(rng_t *rng, shoe_t *shoe, card_t hand[5]);
+/* Replaces every card whose hold bit is clear; true if anything drew. */
+bool        vp_front_draw(shoe_t *shoe, uint32_t hold, card_t hand[5]);
 
 /*
  * Read-only strategy interface for frontends.  vp_front_solve() runs the
