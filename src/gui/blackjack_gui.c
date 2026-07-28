@@ -4,6 +4,7 @@
 
 #include "gui.h"
 #include "cards.h"
+#include "games/bj_strategy.h"
 #include "games/blackjack.h"
 
 /* ---- layout ------------------------------------------------------------- */
@@ -23,6 +24,13 @@
 #define BTN_Y   648
 #define BTN_H   48
 
+/* Trainer panel: left felt, clear of the dealer's two cards (which sit
+ * around x 463..817 while the player is acting), the player rows below
+ * y 330, the centred banners and the status line. */
+#define STRAT_X       40
+#define STRAT_Y       110
+#define FEEDBACK_HOLD 1.2          /* seconds the verdict stays up */
+
 typedef struct {
     rng_t        *rng;
     bj_session_t  s;
@@ -32,6 +40,14 @@ typedef struct {
     double        shuffle_until;
     bool          counting;        /* --counting Hi-Lo trainer */
     bj_count_t    count;
+    /* basic-strategy trainer, --counting only.  The recommendation itself
+     * is never stored: it is read back from the engine each frame. */
+    long          strat_total;     /* graded decisions this process */
+    long          strat_correct;
+    bj_strategy_action_t fb_rec;   /* the advice the last decision faced */
+    bool          fb_correct;
+    bool          fb_valid;
+    double        fb_until;
 } bjgui_t;
 
 /* ---- helpers ------------------------------------------------------------ */
@@ -71,6 +87,39 @@ static void note_new_cards(bjgui_t *v, const gui_ctx_t *g)
         PlaySound(g->as->snd_deal);
         v->seen_cards = n;
     }
+}
+
+/*
+ * The one path a player action takes, from the keyboard or from a button.
+ * Grading happens against the advice for the state the action is taken
+ * from, so it must be read before the engine moves on.  `click` is false
+ * for the button path because gui_button() has already made the sound.
+ * Card sounds stay with note_new_cards().
+ */
+static void perform_player_action(bjgui_t *v, const gui_ctx_t *g,
+                                  bj_action_t a, bool click)
+{
+    if (!bj_legal(&v->s, a))
+        return;                     /* dead key or disabled button */
+
+    if (v->counting) {
+        bj_strategy_action_t rec = bj_basic_strategy(&v->s);
+
+        if (rec != BJ_STRAT_NONE) {
+            bool ok = bj_strategy_agrees(rec, a);
+
+            v->strat_total++;
+            if (ok)
+                v->strat_correct++;
+            v->fb_rec = rec;
+            v->fb_correct = ok;
+            v->fb_valid = true;
+            v->fb_until = GetTime() + FEEDBACK_HOLD;
+        }
+    }
+    if (click)
+        gui_play_click(g);
+    bj_act(&v->s, a, v->rng);
 }
 
 /* During the opening animation only the first `shown` cards exist. */
@@ -283,6 +332,48 @@ static void draw_count(const gui_ctx_t *g, const bjgui_t *v)
              GUI_DIM);
 }
 
+/*
+ * Basic-strategy trainer panel.  The recommendation is only offered while
+ * the engine is genuinely waiting on the active hand and the opening deal
+ * has finished landing; the running tally and the verdict from the last
+ * decision stay up either way, so the panel does not jump around.
+ */
+static void draw_strategy(const gui_ctx_t *g, const bjgui_t *v)
+{
+    bj_strategy_action_t rec = bj_basic_strategy(&v->s);
+    char line[64];
+
+    gui_text(g, true, "BASIC STRATEGY", STRAT_X, STRAT_Y, 22, GUI_GOLD);
+
+    if (!v->dealing && rec != BJ_STRAT_NONE) {
+        snprintf(line, sizeof line, "RECOMMENDED: %s",
+                 bj_strategy_word(rec));
+        gui_text(g, true, line, STRAT_X, STRAT_Y + 28, 24, GUI_CREAM);
+    }
+
+    snprintf(line, sizeof line, "CORRECT: %ld / %ld", v->strat_correct,
+             v->strat_total);
+    gui_text(g, false, line, STRAT_X, STRAT_Y + 66, 20, GUI_DIM);
+    snprintf(line, sizeof line, "ACCURACY: %.1f%%",
+             v->strat_total ? 100.0 * (double)v->strat_correct /
+                                  (double)v->strat_total
+                            : 0.0);
+    gui_text(g, false, line, STRAT_X, STRAT_Y + 90, 20, GUI_DIM);
+
+    /* the verdict names the advice as it stood before that action, so a
+     * state change cannot rewrite it while it is still on screen */
+    if (v->fb_valid && GetTime() < v->fb_until) {
+        if (v->fb_correct) {
+            gui_text(g, true, "CORRECT", STRAT_X, STRAT_Y + 122, 22,
+                     GUI_GOLD);
+        } else {
+            snprintf(line, sizeof line, "BASIC STRATEGY: %s",
+                     bj_strategy_word(v->fb_rec));
+            gui_text(g, true, line, STRAT_X, STRAT_Y + 122, 22, GUI_CREAM);
+        }
+    }
+}
+
 /* ---- one frame ---------------------------------------------------------- */
 
 static void bj_frame(const gui_ctx_t *g, void *state)
@@ -334,10 +425,8 @@ static void bj_frame(const gui_ctx_t *g, void *state)
             { KEY_P, BJ_SPLIT }, { KEY_R, BJ_SURRENDER },
         };
         for (size_t i = 0; i < sizeof KEYS / sizeof KEYS[0]; i++) {
-            if (IsKeyPressed(KEYS[i].key) &&
-                bj_legal(&v->s, KEYS[i].act)) {
-                gui_play_click(g);
-                bj_act(&v->s, KEYS[i].act, v->rng);
+            if (IsKeyPressed(KEYS[i].key)) {
+                perform_player_action(v, g, KEYS[i].act, true);
                 break;
             }
         }
@@ -354,8 +443,10 @@ static void bj_frame(const gui_ctx_t *g, void *state)
     DrawRectangle(0, 0, GUI_CANVAS_W, 56, GUI_FELT_DARK);
     gui_text_centered(g, true, "BLACKJACK", GUI_CANVAS_W / 2, 12, 36,
                       GUI_GOLD);
-    if (v->counting)
+    if (v->counting) {
         draw_count(g, v);
+        draw_strategy(g, v);
+    }
 
     draw_dealer(g, v);
     draw_hands(g, v);
@@ -385,7 +476,7 @@ static void bj_frame(const gui_ctx_t *g, void *state)
             bool ok = bj_legal(&v->s, ACTS[i].act);
             if (gui_button(g, (Rectangle){ x, BTN_Y, 210, BTN_H },
                            ACTS[i].label, ok))
-                bj_act(&v->s, ACTS[i].act, v->rng);
+                perform_player_action(v, g, ACTS[i].act, false);
             x += 222;
         }
     } else if (betting && !v->dealing) {

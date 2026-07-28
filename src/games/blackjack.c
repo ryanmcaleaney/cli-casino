@@ -6,6 +6,7 @@
 #include <string.h>
 #include <strings.h>
 
+#include "bj_strategy.h"
 #include "cardart.h"
 #include "cards.h"
 #include "output.h"
@@ -749,11 +750,21 @@ static void log_action(bj_actlog_t *lg, const char *w)
 }
 
 /*
- * Drive a round to settlement.  Interactive and scripted play share this
- * path, so the rules are applied identically either way.
+ * Where the player's decisions come from.  All three sources end up in the
+ * same round loop and pass their action through bj_act(), so the rules are
+ * applied identically however the hand is being played.
+ */
+typedef enum {
+    BJ_PLAY_INTERACTIVE,        /* prompt on stdin */
+    BJ_PLAY_SCRIPTED,           /* actions listed on the command line */
+    BJ_PLAY_BASIC               /* --basic: the strategy adviser decides */
+} bj_play_mode_t;
+
+/*
+ * Drive a round to settlement.
  */
 static void play_round(bj_session_t *s, rng_t *rng, bj_script_t *sc,
-                       bool interactive, FILE *disp, bool display,
+                       bj_play_mode_t mode, FILE *disp, bool display,
                        bj_actlog_t *lg)
 {
     lg->n = 0;
@@ -768,8 +779,14 @@ static void play_round(bj_session_t *s, rng_t *rng, bj_script_t *sc,
 
     if (bj_insurance_pending(s)) {
         bool take = false;
-        if (interactive) {
+        if (mode == BJ_PLAY_INTERACTIVE) {
             ask_insurance(disp, &take);
+        } else if (mode == BJ_PLAY_BASIC) {
+            /* basic strategy always declines: insurance is a side bet on
+             * the hole card, and the count indices that would ever make it
+             * worth taking are outside this mode */
+            if (display)
+                fprintf(disp, "> noinsurance\n");
         } else if (sc->pos < sc->n &&
                    (sc->acts[sc->pos] == SC_INS ||
                     sc->acts[sc->pos] == SC_NOINS)) {
@@ -786,10 +803,27 @@ static void play_round(bj_session_t *s, rng_t *rng, bj_script_t *sc,
     while (s->round.phase == BJ_PHASE_PLAYER) {
         bj_action_t a = BJ_STAND;
 
-        if (interactive) {
+        switch (mode) {
+        case BJ_PLAY_INTERACTIVE:
             if (!ask_action(s, disp, &a))
                 a = BJ_STAND;
-        } else {
+            break;
+
+        case BJ_PLAY_BASIC: {
+            /* One decision at a time, read back from the live state: the
+             * next card of a hit, each half of a split and the bankroll
+             * fallbacks for an unaffordable double or split all come out
+             * of the next pass round this loop. */
+            bj_action_t want;
+
+            if (bj_strategy_action(bj_basic_strategy(s), &want) &&
+                bj_legal(s, want))
+                a = want;
+            break;
+        }
+
+        case BJ_PLAY_SCRIPTED:
+        default:
             /* skip insurance words that belong to another round */
             while (sc->pos < sc->n && (sc->acts[sc->pos] == SC_INS ||
                                        sc->acts[sc->pos] == SC_NOINS))
@@ -802,9 +836,10 @@ static void play_round(bj_session_t *s, rng_t *rng, bj_script_t *sc,
             } else {
                 a = BJ_STAND;         /* script exhausted */
             }
-            if (display)
-                fprintf(disp, "> %s\n", bj_action_word(a));
+            break;
         }
+        if (mode != BJ_PLAY_INTERACTIVE && display)
+            fprintf(disp, "> %s\n", bj_action_word(a));
         log_action(lg, bj_action_word(a));
         bj_act(s, a, rng);
         if (display && s->round.phase == BJ_PHASE_PLAYER)
@@ -971,8 +1006,8 @@ int blackjack_run(const cli_t *cli, rng_t *rng)
         return 2;
 
     if (cli->gui) {
-        if (sc.n != 0 || cli->quiet || cli->json || cli->stats ||
-            cli->iterations != 1) {
+        if (sc.n != 0 || cli->basic || cli->quiet || cli->json ||
+            cli->stats || cli->iterations != 1) {
             fprintf(stderr, "blackjack: --gui takes no other arguments "
                             "(only --counting and --seed)\n");
             return 2;
@@ -992,16 +1027,28 @@ int blackjack_run(const cli_t *cli, rng_t *rng)
         return 2;
     }
 
-    bool interactive = sc.n == 0;
-    if (interactive && cli->stats) {
-        fprintf(stderr, "blackjack: simulation (--runs/--stats) needs "
-                        "scripted actions, e.g. 's' or 'h,s'\n");
+    if (cli->basic && sc.n != 0) {
+        fprintf(stderr, "blackjack: --basic plays the hand itself; it "
+                        "cannot be combined with scripted actions\n");
+        return 2;
+    }
+
+    bj_play_mode_t mode = cli->basic ? BJ_PLAY_BASIC
+                        : sc.n != 0  ? BJ_PLAY_SCRIPTED
+                                     : BJ_PLAY_INTERACTIVE;
+
+    /* An unattended simulation needs a decision source; always-stand is
+     * only ever played when the user asked for it with a script. */
+    if (mode == BJ_PLAY_INTERACTIVE && cli->stats) {
+        fprintf(stderr, "blackjack: simulation requires scripted actions "
+                        "or --basic\n");
         return 2;
     }
 
     bool machine = cli->quiet || cli->json || cli->stats;
     FILE *disp = machine ? stderr : stdout;
-    bool display = interactive || (!machine && cli->iterations == 1);
+    bool display = mode == BJ_PLAY_INTERACTIVE ||
+                   (!machine && cli->iterations == 1);
 
     bj_session_t s;
     bj_session_start(&s, rng);
@@ -1012,7 +1059,7 @@ int blackjack_run(const cli_t *cli, rng_t *rng)
 
     for (long it = 0; it < cli->iterations; it++) {
         if (s.bankroll < s.base_bet) {
-            if (interactive || cli->iterations == 1) {
+            if (mode == BJ_PLAY_INTERACTIVE || cli->iterations == 1) {
                 fprintf(disp, "Out of credits.\n");
                 break;
             }
@@ -1021,7 +1068,7 @@ int blackjack_run(const cli_t *cli, rng_t *rng)
         }
 
         sc.pos = 0;                     /* the script replays each round */
-        play_round(&s, rng, &sc, interactive, disp, display, &lg);
+        play_round(&s, rng, &sc, mode, disp, display, &lg);
         tally(&st, &s);
         s.round.phase = BJ_PHASE_BET;
 
@@ -1081,6 +1128,8 @@ int blackjack_run(const cli_t *cli, rng_t *rng)
             char money[32];
             printf("Iterations: %ld   Rounds: %ld   Hands: %ld\n",
                    cli->iterations, st.rounds, st.hands);
+            if (mode == BJ_PLAY_BASIC)
+                printf("Strategy: basic\n");
             printf("%-14s %10s %9s\n", "RESULT", "COUNT", "RATE%");
             printf("%-14s %10ld %9.4f\n", "win", st.wins,
                    100.0 * (double)st.wins / (double)st.hands);
@@ -1132,10 +1181,18 @@ void blackjack_list_bets(void)
     puts("  insurance | noinsurance   answer the insurance offer");
     puts("arguments:");
     puts("  bet:N            wager per hand in credits (5-500, default 25)");
+    puts("  --basic          play every decision by basic strategy instead");
+    puts("                   of prompting or following a script; matches");
+    puts("                   this table exactly (6 deck, S17, DAS, late");
+    puts("                   surrender, dealer peek), always declines");
+    puts("                   insurance and is count-independent");
     puts("usage:");
     puts("  blackjack                interactive game");
     puts("  blackjack h,s            scripted: hit then stand");
     puts("  blackjack bet:50 p,s,s   split, then stand both hands");
     puts("  blackjack s --runs 100000   simulate always-stand");
+    puts("  blackjack --basic           one hand played by basic strategy");
+    puts("  blackjack --basic --runs 100000        simulate basic strategy");
+    puts("  blackjack bet:50 --basic --runs 100000 same, 50-credit wager");
     puts("results: BLACKJACK | WIN | LOSS | PUSH | SURRENDER");
 }

@@ -250,10 +250,85 @@ r=$($C blackjack --seed 11 --runs 20000 s --json |
     sed 's/.*"return_per_unit":\([0-9.]*\).*/\1/')
 case "$r" in 0.9*|0.8*) ok ;; *) bad "bj always-stand return plausible (got $r)" ;; esac
 
-# simulation needs a script; interactive play still works
+# simulation needs a script or --basic; interactive play still works
 expect_exit "runs bj needs script"  2 $C blackjack --runs 10
 expect_exit "bj interactive EOF"    0 sh -c "$C blackjack --seed 1 </dev/null"
 expect_exit "bj piped hit"          0 sh -c "echo h | $C blackjack --seed 1"
+
+# --- blackjack --basic (automatic basic strategy) ------------------------
+# a single round plays itself: no stdin is read at all
+expect_exit "bj basic single round"  0 \
+    sh -c "$C blackjack --basic --seed 1 </dev/null"
+expect_exit "bj basic runs"          0 $C blackjack --basic --runs 100 --seed 1
+expect_exit "bj basic iterations"    0 \
+    $C blackjack --basic --iterations 100 --stats --seed 1
+expect_exit "bj basic with wager"    0 \
+    $C blackjack bet:50 --basic --runs 100 --seed 1
+expect_exit "bj basic quiet"         0 $C blackjack --basic --quiet --seed 1
+expect_exit "bj basic json"          0 $C blackjack --basic --json --seed 1
+
+# the action log records the automatic decisions exactly like scripted ones
+expect_grep "bj basic json actions" '"actions":\["stand"\]' \
+    $C blackjack --basic --seed 1 --json
+expect_grep "bj basic transcript" "^> stand" $C blackjack --basic --seed 1
+expect_grep "bj basic stats heading" "Strategy: basic" \
+    $C blackjack --basic --runs 100 --seed 1
+
+# a fixed seed is reproducible, and matches nothing about the scripted path
+a=$($C blackjack --basic --seed 42 --json)
+b=$($C blackjack --basic --seed 42 --json)
+[ "$a" = "$b" ] && ok || bad "bj basic seed is deterministic"
+
+# basic strategy declines every insurance offer it is shown
+$C blackjack --basic --runs 2000 --seed 3 --json |
+    grep -q '"insurance_bets":0,"insurance_wins":0' &&
+    ok || bad "bj basic never takes insurance"
+n=$($C blackjack --basic --iterations 2000 --seed 3 --json |
+    grep -c '"insurance":{"taken":true')
+[ "$n" -eq 0 ] && ok || bad "bj basic declines insurance per round (got $n)"
+n=$($C blackjack --basic --iterations 2000 --seed 3 --json |
+    grep -c '"noinsurance"')
+[ "$n" -gt 0 ] && ok || bad "bj basic logs noinsurance when offered (got $n)"
+
+# automatic play reaches settlement on every round: no PENDING result
+n=$($C blackjack --basic --iterations 2000 --seed 5 --json |
+    grep -c '"result":"PENDING"')
+[ "$n" -eq 0 ] && ok || bad "bj basic always settles (got $n pending)"
+
+# the doubles, splits and multi-hand splits the chart calls for happen
+$C blackjack --basic --runs 5000 --seed 5 --json | awk '
+    { match($0, /"doubles":[0-9]+/); d = substr($0, RSTART + 10, RLENGTH - 10)
+      match($0, /"splits":[0-9]+/);  s = substr($0, RSTART + 9, RLENGTH - 9)
+      match($0, /"surrenders":[0-9]+/); r = substr($0, RSTART + 13, RLENGTH - 13)
+      print (d > 0 && s > 0 && r > 0) ? "OK" : "BAD" }' |
+    grep -q OK && ok || bad "bj basic doubles, splits and surrenders"
+n=$($C blackjack --basic --iterations 4000 --seed 8 --json |
+    grep -c '"split":true.*"split":true.*"split":true')
+[ "$n" -gt 0 ] && ok || bad "bj basic plays multiple split hands (got $n)"
+
+# a basic-strategy run beats always-stand and lands near break even
+r=$($C blackjack --basic --runs 20000 --seed 11 --json |
+    sed 's/.*"return_per_unit":\([0-9.]*\).*/\1/')
+case "$r" in 0.9[5-9]*|1.0*) ok ;; *) bad "bj basic return near break even (got $r)" ;; esac
+
+# --basic replaces the decision source, so a script cannot come with it
+expect_exit "bj basic with script"      2 $C blackjack h,s --basic --runs 100
+expect_exit "bj basic with one action"  2 $C blackjack bet:25 s --basic
+expect_exit "bj basic with long action" 2 $C blackjack stand --basic --seed 1
+# ...but a wager is not an action
+expect_exit "bj basic bet is not action" 0 $C blackjack bet:50 --basic --seed 1
+
+# --basic is count-independent, so it is not a counting mode
+expect_exit "bj basic with counting" 2 $C blackjack --basic --counting
+expect_exit "bj basic with gui"      2 $C blackjack --gui --basic
+# and it is blackjack only
+expect_exit "basic rejected roulette" 2 $C roulette red --basic
+expect_exit "basic rejected videopoker" 2 $C videopoker --basic
+expect_grep "basic rejected message" "only available for blackjack" \
+    sh -c "$C roulette red --basic 2>&1"
+
+expect_grep "basic in global help" "basic.*blackjack only" $C --help
+expect_grep "basic in bj help" "S17, DAS, late" $C blackjack --list-bets
 
 ln -sf casino blackjack
 expect_grep "bj symlink invocation" '"game":"blackjack"' \
@@ -264,8 +339,8 @@ rm -f blackjack
 # table, which the CLI never does (it plays one round per iteration), so
 # the engine API is exercised directly.  See tests/bj_phase.c.
 if ${CC:-cc} -std=c11 -Isrc -o build/bj_phase_test tests/bj_phase.c \
-        src/games/blackjack.c src/cardart.c src/cards.c src/cli.c \
-        src/output.c src/rng.c >/dev/null 2>&1; then
+        src/games/bj_strategy.c src/games/blackjack.c src/cardart.c \
+        src/cards.c src/cli.c src/output.c src/rng.c >/dev/null 2>&1; then
     expect_exit "bj settled is a between-round phase" 0 ./build/bj_phase_test
 else
     bad "bj phase test did not build"
@@ -274,11 +349,33 @@ fi
 # Hi-Lo counting: the tag table, counting each card exactly once, the
 # face-down hole card and the reset on a reshuffle.  See tests/bj_count.c.
 if ${CC:-cc} -std=c11 -Isrc -o build/bj_count_test tests/bj_count.c \
-        src/games/blackjack.c src/cardart.c src/cards.c src/cli.c \
-        src/output.c src/rng.c >/dev/null 2>&1; then
+        src/games/bj_strategy.c src/games/blackjack.c src/cardart.c \
+        src/cards.c src/cli.c src/output.c src/rng.c >/dev/null 2>&1; then
     expect_exit "bj hi-lo counting checks" 0 ./build/bj_count_test
 else
     bad "bj counting test did not build"
+fi
+
+# basic strategy for the engine's own rules (6 deck, S17, DAS, late
+# surrender, peek): the chart itself, the legal fallbacks and count
+# independence.  See tests/bj_strategy.c.
+if ${CC:-cc} -std=c11 -Isrc -o build/bj_strategy_test tests/bj_strategy.c \
+        src/games/bj_strategy.c src/games/blackjack.c src/cardart.c \
+        src/cards.c src/cli.c src/output.c src/rng.c >/dev/null 2>&1; then
+    expect_exit "bj basic strategy checks" 0 ./build/bj_strategy_test
+else
+    bad "bj strategy test did not build"
+fi
+
+# --basic drives the engine one decision at a time: every recommendation
+# legal, every round settled, insurance declined, and the bankroll
+# fallbacks reached.  See tests/bj_basic.c.
+if ${CC:-cc} -std=c11 -Isrc -o build/bj_basic_test tests/bj_basic.c \
+        src/games/bj_strategy.c src/games/blackjack.c src/cardart.c \
+        src/cards.c src/cli.c src/output.c src/rng.c >/dev/null 2>&1; then
+    expect_exit "bj automatic basic play checks" 0 ./build/bj_basic_test
+else
+    bad "bj automatic basic play test did not build"
 fi
 
 # --- baccarat -----------------------------------------------------------

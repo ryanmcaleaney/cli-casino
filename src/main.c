@@ -79,6 +79,7 @@ static void global_usage(FILE *f)
         "(videopoker --gui only)\n"
         "  --counting      GUI Hi-Lo counting trainer "
         "(blackjack --gui only)\n"
+        "  --basic         automatic basic strategy (blackjack only)\n"
         "\n"
         "games:\n");
     for (int i = 0; i < NGAMES; i++)
@@ -157,6 +158,11 @@ int main(int argc, char **argv)
     if (cli.counting && strcmp(game->name, "blackjack") != 0) {
         fprintf(stderr, "%s: --counting is only available for "
                         "blackjack --gui\n", game->name);
+        return 2;
+    }
+    if (cli.basic && strcmp(game->name, "blackjack") != 0) {
+        fprintf(stderr, "%s: --basic is only available for blackjack\n",
+                game->name);
         return 2;
     }
     if (cli.gui && strcmp(game->name, "videopoker") != 0 &&

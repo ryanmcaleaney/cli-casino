@@ -120,6 +120,8 @@ int cli_parse(int argc, char **argv, cli_t *out, char *err, size_t errlen)
                 out->optimal = true;
             } else if (strcmp(arg, "--counting") == 0) {
                 out->counting = true;
+            } else if (strcmp(arg, "--basic") == 0) {
+                out->basic = true;
             } else if (strncmp(arg, "--seed", 6) == 0 &&
                        (arg[6] == '\0' || arg[6] == '=')) {
                 if (opt_value(argc, argv, &i, "--seed", &val, err, errlen))

@@ -40,6 +40,7 @@ typedef struct cli {
     bool     gui;               /* graphical frontend (videopoker) */
     bool     optimal;           /* GUI strategy training (videopoker --gui) */
     bool     counting;          /* GUI Hi-Lo training (blackjack --gui) */
+    bool     basic;             /* automatic basic strategy (blackjack) */
     bool     seeded;
     uint64_t seed;
     long     iterations;        /* >= 1, default 1 */
