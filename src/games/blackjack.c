@@ -91,6 +91,25 @@ card_t bj_dealt_card(const bj_session_t *s, int i)
     return s->shoe.cards[i];
 }
 
+int bj_round_cards(const bj_session_t *s)
+{
+    const bj_round_t *r = &s->round;
+    int n = r->ndealer;
+
+    /* a split moves a card between hands, it never draws one, so the
+     * hands and the dealer hold every card this round has taken */
+    for (int i = 0; i < r->nhands; i++)
+        n += r->hands[i].n;
+    return n;
+}
+
+int bj_hole_index(const bj_session_t *s)
+{
+    if (s->round.ndealer < 2)
+        return -1;                      /* no round on the felt */
+    return bj_dealt_count(s) - bj_round_cards(s) + 3;
+}
+
 void bj_count_reset(bj_count_t *c)
 {
     c->running = 0;
@@ -135,6 +154,67 @@ double bj_true_count(const bj_count_t *c, const bj_session_t *s)
     /* the engine reshuffles at the cut card, so this never divides by a
      * sliver of a deck in practice; an exhausted shoe still cannot fault */
     return decks > 0.0 ? c->running / decks : (double)c->running;
+}
+
+/* ---- Hi-Lo true-count bet ramp (see blackjack.h) ----------------------- */
+
+/* The ramp: step -> multiple of the base unit. */
+static const long RAMP_MULT[BJ_RAMP_STEPS] = { 1, 2, 4, 6, 8 };
+
+/*
+ * Which step a true count sits on.  The count is used as it comes out of
+ * the division, not rounded to the one decimal the GUI displays, so +0.99
+ * is still the bottom step and +1.0 is the second.
+ */
+static int ramp_step(double true_count)
+{
+    if (true_count < 1.0)
+        return 0;
+    if (true_count < 2.0)
+        return 1;
+    if (true_count < 3.0)
+        return 2;
+    if (true_count < 4.0)
+        return 3;
+    return 4;
+}
+
+long bj_count_bet_units(double true_count)
+{
+    return RAMP_MULT[ramp_step(true_count)];
+}
+
+void bj_count_bet(const bj_session_t *s, const bj_count_t *c, long unit,
+                  bj_bet_plan_t *out)
+{
+    long want;
+
+    /* the unit is a legal wager in its own right, which also keeps the
+     * widest spread inside long arithmetic */
+    if (unit < BJ_BET_MIN)
+        unit = BJ_BET_MIN;
+    if (unit > BJ_BET_MAX)
+        unit = BJ_BET_MAX;
+
+    out->true_count = bj_true_count(c, s);
+    out->step = ramp_step(out->true_count);
+    out->units = RAMP_MULT[out->step];
+    out->capped_table = false;
+    out->capped_bankroll = false;
+
+    want = unit * out->units;
+    if (want > BJ_BET_MAX) {
+        want = BJ_BET_MAX;              /* the table tops out first */
+        out->capped_table = true;
+    }
+    if (want > s->bankroll) {
+        /* the most the money on the table can cover, in whole credits */
+        want = s->bankroll - s->bankroll % BJ_HALF;
+        out->capped_bankroll = true;
+    }
+    if (want < BJ_BET_MIN)
+        want = BJ_BET_MIN;              /* a re-buy is due before this bets */
+    out->wager = want;
 }
 
 const char *bj_result_word(bj_result_t r)
@@ -234,15 +314,25 @@ static void dealer_add(bj_round_t *r, card_t c)
 static void settle(bj_session_t *s);
 static void advance(bj_session_t *s, rng_t *rng);
 
-/* Reshuffle only between rounds, once the cut card is reached. */
-static void maybe_shuffle(bj_session_t *s, rng_t *rng)
+/* Reshuffle only between rounds, once the cut card is reached.  Doing it
+ * as its own step lets a frontend settle its count and size its wager
+ * against the shoe the round will actually be dealt from; the `prepared`
+ * flag makes the extra call idempotent for everyone else. */
+bool bj_prepare_round(bj_session_t *s, rng_t *rng)
 {
+    if (!between_rounds(s))
+        return false;
+    if (s->prepared)
+        return s->shuffled;
+
     s->shuffled = false;
     if (shoe_remaining(&s->shoe) <= BJ_RESHUFFLE_AT) {
         shoe_init(&s->shoe, BJ_DECKS);
         shoe_shuffle(&s->shoe, rng);
         s->shuffled = true;
     }
+    s->prepared = true;
+    return s->shuffled;
 }
 
 /* Dealer peeks on an ace or ten-value upcard. */
@@ -272,7 +362,8 @@ void bj_deal(bj_session_t *s, rng_t *rng)
     if (!bj_can_deal(s))
         return;
 
-    maybe_shuffle(s, rng);
+    bj_prepare_round(s, rng);
+    s->prepared = false;            /* this round consumes the preparation */
 
     memset(r, 0, sizeof *r);
     r->nhands = 1;
@@ -761,14 +852,28 @@ typedef enum {
 } bj_play_mode_t;
 
 /*
+ * Fold every card now face up into the running count.  There is no deal
+ * animation here, so everything the shoe has given out is on the felt
+ * except the hole card while the engine still hides it.  A NULL count is
+ * a session that is not counting.
+ */
+static void count_sync(bj_count_t *c, const bj_session_t *s)
+{
+    if (c)
+        bj_count_update(c, s, bj_dealt_count(s), bj_hole_index(s),
+                        !s->round.hole_hidden);
+}
+
+/*
  * Drive a round to settlement.
  */
 static void play_round(bj_session_t *s, rng_t *rng, bj_script_t *sc,
                        bj_play_mode_t mode, FILE *disp, bool display,
-                       bj_actlog_t *lg)
+                       bj_actlog_t *lg, bj_count_t *count)
 {
     lg->n = 0;
     bj_deal(s, rng);
+    count_sync(count, s);
 
     if (display) {
         if (s->shuffled)
@@ -796,6 +901,7 @@ static void play_round(bj_session_t *s, rng_t *rng, bj_script_t *sc,
         }
         log_action(lg, take ? "insurance" : "noinsurance");
         bj_insurance(s, take, rng);
+        count_sync(count, s);       /* the peek may have turned the hole */
         if (display && s->round.insurance > 0)
             fprintf(disp, "Insurance taken.\n");
     }
@@ -842,9 +948,14 @@ static void play_round(bj_session_t *s, rng_t *rng, bj_script_t *sc,
             fprintf(disp, "> %s\n", bj_action_word(a));
         log_action(lg, bj_action_word(a));
         bj_act(s, a, rng);
+        /* hit, double and split cards, and the dealer's own draws once
+         * the last hand is finished, all arrive face up */
+        count_sync(count, s);
         if (display && s->round.phase == BJ_PHASE_PLAYER)
             print_table(disp, s);
     }
+
+    count_sync(count, s);           /* settled: nothing is face down now */
 
     if (display) {
         fprintf(disp, "\n");
@@ -948,6 +1059,10 @@ static void round_json(FILE *f, const bj_session_t *s,
 
 /* ---- driver -------------------------------------------------------------- */
 
+/* True-count bands the opening wager was chosen from: below zero, then
+ * the four ramp steps from zero up. */
+#define BJ_TC_BANDS (BJ_RAMP_STEPS + 1)
+
 typedef struct {
     long rounds, hands;
     long wins, losses, pushes, naturals;
@@ -956,7 +1071,48 @@ typedef struct {
     long pbust, dbust;
     long shuffles, rebuys;
     long wagered, returned;
+
+    /* --count-bet: how the opening wager was arrived at */
+    long   ramp[BJ_RAMP_STEPS];     /* rounds bet at 1, 2, 4, 6, 8 units */
+    long   band[BJ_TC_BANDS];       /* rounds bet at each true-count band */
+    long   cap_table, cap_bank;
+    long   opening;                 /* sum of the opening wagers */
+    long   open_min, open_max;
+    double tc_sum;
 } bj_stats_t;
+
+/* Which true-count band a wager was placed from: negative first, then the
+ * ramp's own steps from zero up. */
+static int tc_band(double true_count)
+{
+    if (true_count < 0.0)
+        return 0;
+    if (true_count < 1.0)
+        return 1;
+    if (true_count < 2.0)
+        return 2;
+    if (true_count < 3.0)
+        return 3;
+    if (true_count < 4.0)
+        return 4;
+    return 5;
+}
+
+static void tally_bet(bj_stats_t *st, const bj_bet_plan_t *p)
+{
+    st->ramp[p->step]++;
+    st->band[tc_band(p->true_count)]++;
+    st->tc_sum += p->true_count;
+    st->opening += p->wager;
+    if (st->open_min == 0 || p->wager < st->open_min)
+        st->open_min = p->wager;
+    if (p->wager > st->open_max)
+        st->open_max = p->wager;
+    if (p->capped_table)
+        st->cap_table++;
+    if (p->capped_bankroll)
+        st->cap_bank++;
+}
 
 static void tally(bj_stats_t *st, const bj_session_t *s)
 {
@@ -997,6 +1153,18 @@ static void tally(bj_stats_t *st, const bj_session_t *s)
     }
 }
 
+/* What the count-based wager was, before the cards come out. */
+static void print_bet(FILE *f, const bj_count_t *c, const bj_bet_plan_t *p)
+{
+    char money[32];
+
+    bj_credits(money, sizeof money, p->wager);
+    fprintf(f, "Running count: %+d\nTrue count: %+.1f\n"
+               "Bet ramp: %ld unit%s\nWager: %s\n",
+            c->running, p->true_count, p->units,
+            p->units == 1 ? "" : "s", money);
+}
+
 int blackjack_run(const cli_t *cli, rng_t *rng)
 {
     bj_script_t sc;
@@ -1006,8 +1174,8 @@ int blackjack_run(const cli_t *cli, rng_t *rng)
         return 2;
 
     if (cli->gui) {
-        if (sc.n != 0 || cli->basic || cli->quiet || cli->json ||
-            cli->stats || cli->iterations != 1) {
+        if (sc.n != 0 || cli->basic || cli->count_bet || cli->quiet ||
+            cli->json || cli->stats || cli->iterations != 1) {
             fprintf(stderr, "blackjack: --gui takes no other arguments "
                             "(only --counting and --seed)\n");
             return 2;
@@ -1030,6 +1198,13 @@ int blackjack_run(const cli_t *cli, rng_t *rng)
     if (cli->basic && sc.n != 0) {
         fprintf(stderr, "blackjack: --basic plays the hand itself; it "
                         "cannot be combined with scripted actions\n");
+        return 2;
+    }
+
+    /* the ramp sizes the wager for a hand somebody else plays: the
+     * decisions have to come from the strategy engine */
+    if (cli->count_bet && !cli->basic) {
+        fprintf(stderr, "blackjack: --count-bet requires --basic\n");
         return 2;
     }
 
@@ -1057,8 +1232,18 @@ int blackjack_run(const cli_t *cli, rng_t *rng)
     bj_stats_t st = { 0 };
     bj_actlog_t lg = { { 0 }, 0 };
 
+    /* one running count for the whole session, kept card by card by
+     * play_round() and restarted only by a fresh shoe */
+    bj_count_t count;
+    bj_bet_plan_t plan;
+    bj_count_reset(&count);
+
     for (long it = 0; it < cli->iterations; it++) {
-        if (s.bankroll < s.base_bet) {
+        /* a flat game needs the whole wager; the ramp only needs enough
+         * for a minimum bet, and drops to what the bankroll covers */
+        long need = cli->count_bet ? BJ_BET_MIN : s.base_bet;
+
+        if (s.bankroll < need) {
             if (mode == BJ_PLAY_INTERACTIVE || cli->iterations == 1) {
                 fprintf(disp, "Out of credits.\n");
                 break;
@@ -1067,8 +1252,21 @@ int blackjack_run(const cli_t *cli, rng_t *rng)
             st.rebuys++;
         }
 
+        if (cli->count_bet) {
+            /* settle which shoe this round comes from before betting on
+             * it: a fresh one starts at a zero count, so at one unit */
+            if (bj_prepare_round(&s, rng))
+                bj_count_reset(&count);
+            bj_count_bet(&s, &count, bet, &plan);
+            bj_set_bet(&s, plan.wager);
+            tally_bet(&st, &plan);
+            if (display)
+                print_bet(disp, &count, &plan);
+        }
+
         sc.pos = 0;                     /* the script replays each round */
-        play_round(&s, rng, &sc, mode, disp, display, &lg);
+        play_round(&s, rng, &sc, mode, disp, display, &lg,
+                   cli->count_bet ? &count : NULL);
         tally(&st, &s);
         s.round.phase = BJ_PHASE_BET;
 
@@ -1096,6 +1294,11 @@ int blackjack_run(const cli_t *cli, rng_t *rng)
     if (cli->stats) {
         double ret = st.wagered ? (double)st.returned / (double)st.wagered
                                 : 0.0;
+        double rounds = st.rounds ? (double)st.rounds : 1.0;
+        double open_avg = (double)st.opening / rounds / BJ_HALF;
+        double tc_avg = st.tc_sum / rounds;
+        const char *strategy = mode == BJ_PLAY_BASIC ? "basic" : "scripted";
+
         if (cli->json) {
             printf("{\"game\":\"blackjack\",\"iterations\":%ld,"
                    "\"rounds\":%ld,\"hands\":%ld,\"wins\":%ld,"
@@ -1105,31 +1308,71 @@ int blackjack_run(const cli_t *cli, rng_t *rng)
                    "\"player_busts\":%ld,\"dealer_busts\":%ld,"
                    "\"shuffles\":%ld,\"rebuys\":%ld,\"wagered\":%.1f,"
                    "\"returned\":%.1f,\"net\":%.1f,"
-                   "\"return_per_unit\":%.6f}\n",
+                   "\"return_per_unit\":%.6f,\"strategy\":\"%s\"",
                    cli->iterations, st.rounds, st.hands, st.wins,
                    st.losses, st.pushes, st.naturals, st.doubles,
                    st.splits, st.surrenders, st.ins_bets, st.ins_wins,
                    st.pbust, st.dbust, st.shuffles, st.rebuys,
                    (double)st.wagered / BJ_HALF,
                    (double)st.returned / BJ_HALF,
-                   (double)(st.returned - st.wagered) / BJ_HALF, ret);
+                   (double)(st.returned - st.wagered) / BJ_HALF, ret,
+                   strategy);
+            if (cli->count_bet)
+                printf(",\"betting\":{\"mode\":\"hilo_true_count\","
+                       "\"spread\":\"1-8\",\"base_unit\":%.1f,"
+                       "\"average_initial_bet\":%.1f,"
+                       "\"minimum_initial_bet\":%.1f,"
+                       "\"maximum_initial_bet\":%.1f,"
+                       "\"average_true_count\":%.4f,"
+                       "\"capped_table\":%ld,\"capped_bankroll\":%ld,"
+                       "\"multipliers\":{\"1\":%ld,\"2\":%ld,\"4\":%ld,"
+                       "\"6\":%ld,\"8\":%ld},"
+                       "\"true_count\":{\"negative\":%ld,\"0\":%ld,"
+                       "\"1\":%ld,\"2\":%ld,\"3\":%ld,\"4\":%ld}}",
+                       (double)bet / BJ_HALF, open_avg,
+                       (double)st.open_min / BJ_HALF,
+                       (double)st.open_max / BJ_HALF, tc_avg,
+                       st.cap_table, st.cap_bank,
+                       st.ramp[0], st.ramp[1], st.ramp[2], st.ramp[3],
+                       st.ramp[4], st.band[0], st.band[1], st.band[2],
+                       st.band[3], st.band[4], st.band[5]);
+            printf("}\n");
         } else if (cli->quiet) {
             printf("rounds=%ld hands=%ld wins=%ld losses=%ld pushes=%ld "
                    "blackjacks=%ld doubles=%ld splits=%ld surrenders=%ld "
                    "insurance=%ld/%ld player_busts=%ld dealer_busts=%ld "
-                   "wagered=%.1f returned=%.1f net=%.1f return=%.4f\n",
+                   "wagered=%.1f returned=%.1f net=%.1f return=%.4f "
+                   "strategy=%s",
                    st.rounds, st.hands, st.wins, st.losses, st.pushes,
                    st.naturals, st.doubles, st.splits, st.surrenders,
                    st.ins_wins, st.ins_bets, st.pbust, st.dbust,
                    (double)st.wagered / BJ_HALF,
                    (double)st.returned / BJ_HALF,
-                   (double)(st.returned - st.wagered) / BJ_HALF, ret);
+                   (double)(st.returned - st.wagered) / BJ_HALF, ret,
+                   strategy);
+            if (cli->count_bet)
+                printf(" betting=count base_unit=%.1f avg_initial_bet=%.2f "
+                       "min_initial_bet=%.1f max_initial_bet=%.1f "
+                       "avg_true_count=%.4f bet_1u=%ld bet_2u=%ld "
+                       "bet_4u=%ld bet_6u=%ld bet_8u=%ld cap_table=%ld "
+                       "cap_bankroll=%ld tc_neg=%ld tc_0=%ld tc_1=%ld "
+                       "tc_2=%ld tc_3=%ld tc_4=%ld",
+                       (double)bet / BJ_HALF, open_avg,
+                       (double)st.open_min / BJ_HALF,
+                       (double)st.open_max / BJ_HALF, tc_avg,
+                       st.ramp[0], st.ramp[1], st.ramp[2], st.ramp[3],
+                       st.ramp[4], st.cap_table, st.cap_bank,
+                       st.band[0], st.band[1], st.band[2], st.band[3],
+                       st.band[4], st.band[5]);
+            printf("\n");
         } else {
             char money[32];
             printf("Iterations: %ld   Rounds: %ld   Hands: %ld\n",
                    cli->iterations, st.rounds, st.hands);
             if (mode == BJ_PLAY_BASIC)
                 printf("Strategy: basic\n");
+            if (cli->count_bet)
+                printf("Betting: Hi-Lo true-count 1-8 spread\n");
             printf("%-14s %10s %9s\n", "RESULT", "COUNT", "RATE%");
             printf("%-14s %10ld %9.4f\n", "win", st.wins,
                    100.0 * (double)st.wins / (double)st.hands);
@@ -1155,6 +1398,38 @@ int blackjack_run(const cli_t *cli, rng_t *rng)
             bj_credits(money, sizeof money, st.returned - st.wagered);
             printf("Net: %s\n", money);
             printf("Return per unit wagered: %.4f\n", ret);
+
+            if (cli->count_bet) {
+                static const char *const BAND[BJ_TC_BANDS] = {
+                    "below 0", "0 to +1", "+1 to +2", "+2 to +3",
+                    "+3 to +4", "+4 or more"
+                };
+                char label[16];
+
+                printf("%-14s %10s %9s\n", "OPENING BET", "ROUNDS", "RATE%");
+                for (int i = 0; i < BJ_RAMP_STEPS; i++) {
+                    /* step i is the band starting at true count i, so the
+                     * ramp itself still names its own multiples */
+                    snprintf(label, sizeof label, "%ld unit%s",
+                             bj_count_bet_units((double)i), i ? "s" : "");
+                    printf("%-14s %10ld %9.4f\n", label, st.ramp[i],
+                           100.0 * (double)st.ramp[i] / rounds);
+                }
+                printf("%-14s %10ld\n", "table cap", st.cap_table);
+                printf("%-14s %10ld\n", "bankroll cap", st.cap_bank);
+                printf("%-14s %10s %9s\n", "TRUE COUNT", "ROUNDS", "RATE%");
+                for (int i = 0; i < BJ_TC_BANDS; i++)
+                    printf("%-14s %10ld %9.4f\n", BAND[i], st.band[i],
+                           100.0 * (double)st.band[i] / rounds);
+                bj_credits(money, sizeof money, bet);
+                printf("Base unit: %s   ", money);
+                printf("Opening bet avg: %.2f   ", open_avg);
+                bj_credits(money, sizeof money, st.open_min);
+                printf("min: %s   ", money);
+                bj_credits(money, sizeof money, st.open_max);
+                printf("max: %s\n", money);
+                printf("Average true count at bet: %+.4f\n", tc_avg);
+            }
         }
     }
     return 0;
@@ -1186,6 +1461,19 @@ void blackjack_list_bets(void)
     puts("                   this table exactly (6 deck, S17, DAS, late");
     puts("                   surrender, dealer peek), always declines");
     puts("                   insurance and is count-independent");
+    puts("  --count-bet      size each wager from the Hi-Lo true count");
+    puts("                   (requires --basic).  bet:N sets the unit;");
+    puts("                   without it the unit is the 25-credit default:");
+    puts("                     TC < +1   1 unit");
+    puts("                     TC +1     2 units");
+    puts("                     TC +2     4 units");
+    puts("                     TC +3     6 units");
+    puts("                     TC +4+    8 units");
+    puts("                   the wager is chosen before the round's cards");
+    puts("                   are dealt, and the table maximum (500) or the");
+    puts("                   bankroll can cap the top of the spread.  It is");
+    puts("                   bet sizing only: insurance is still declined");
+    puts("                   and no count playing deviations are used");
     puts("usage:");
     puts("  blackjack                interactive game");
     puts("  blackjack h,s            scripted: hit then stand");
@@ -1194,5 +1482,7 @@ void blackjack_list_bets(void)
     puts("  blackjack --basic           one hand played by basic strategy");
     puts("  blackjack --basic --runs 100000        simulate basic strategy");
     puts("  blackjack bet:50 --basic --runs 100000 same, 50-credit wager");
+    puts("  blackjack --basic --count-bet --runs 100000   count bet ramp");
+    puts("  blackjack bet:10 --basic --count-bet --runs 100000  10-unit ramp");
     puts("results: BLACKJACK | WIN | LOSS | PUSH | SURRENDER");
 }

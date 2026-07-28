@@ -41,6 +41,7 @@ typedef struct cli {
     bool     optimal;           /* GUI strategy training (videopoker --gui) */
     bool     counting;          /* GUI Hi-Lo training (blackjack --gui) */
     bool     basic;             /* automatic basic strategy (blackjack) */
+    bool     count_bet;         /* Hi-Lo true-count bet ramp (blackjack) */
     bool     seeded;
     uint64_t seed;
     long     iterations;        /* >= 1, default 1 */

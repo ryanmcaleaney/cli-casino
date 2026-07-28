@@ -83,6 +83,7 @@ typedef struct {
     long       bankroll;
     long       base_bet;
     bool       shuffled;        /* the shoe was shuffled before this round */
+    bool       prepared;        /* bj_prepare_round() has run for the next */
     bj_round_t round;
 } bj_session_t;
 
@@ -102,6 +103,15 @@ void bj_bankroll_reset(bj_session_t *s);
 /* Clamp and set the base wager (half-credits). */
 void bj_set_bet(bj_session_t *s, long units);
 bool bj_can_deal(const bj_session_t *s);
+/*
+ * The between-round reshuffle, as a step of its own: a frontend that sizes
+ * its wager from a running count has to know which shoe the next hand comes
+ * out of before it bets.  Returns true when a fresh shoe was shuffled in,
+ * and does nothing on a second call - the preparation belongs to one round.
+ * bj_deal() prepares an unprepared table itself, so callers that do not
+ * care can ignore this entirely.
+ */
+bool bj_prepare_round(bj_session_t *s, rng_t *rng);
 /* Clears the previous round, so it starts the next hand from a settled
  * one as well as from a fresh table. */
 void bj_deal(bj_session_t *s, rng_t *rng);
@@ -129,6 +139,17 @@ int    bj_dealt_count(const bj_session_t *s);
 card_t bj_dealt_card(const bj_session_t *s, int i);
 
 /*
+ * Every card drawn during a round ends up in a hand, so the round's cards
+ * are the last bj_round_cards() of them and the dealer's hole card is the
+ * fourth (the deal order is player, dealer, player, hole).  Frontends need
+ * that index to keep the face-down card out of the count; it is derived
+ * here once so the deal order is not restated all over the tree.
+ * bj_hole_index() is -1 when no round is on the felt.
+ */
+int    bj_round_cards(const bj_session_t *s);
+int    bj_hole_index(const bj_session_t *s);
+
+/*
  * Running count over the cards a player has actually seen.  The frontend
  * decides what is visible - it knows about deal animations and the face
  * down hole card - and this folds each dealt card in exactly once.  A
@@ -150,6 +171,42 @@ void   bj_count_update(bj_count_t *c, const bj_session_t *s, int visible,
                        int hole, bool hole_shown);
 double bj_decks_left(const bj_session_t *s);
 double bj_true_count(const bj_count_t *c, const bj_session_t *s);
+
+/* ---- Hi-Lo true-count bet ramp ----------------------------------------- */
+
+/*
+ * One fixed 1-8 spread off the unrounded true count:
+ *
+ *   TC < +1        1 unit      +2 <= TC < +3   4 units
+ *   +1 <= TC < +2  2 units     +3 <= TC < +4   6 units
+ *                              TC >= +4        8 units
+ *
+ * The unit is the player's base wager, so it is chosen by bet:N and
+ * defaults to BJ_BET_DEFAULT.  This is bet sizing only: the count never
+ * changes how a hand is played.
+ */
+#define BJ_RAMP_STEPS 5
+
+typedef struct {
+    long   wager;               /* half-credits: what to put up */
+    long   units;               /* the ramp multiple: 1, 2, 4, 6 or 8 */
+    int    step;                /* which step of the ramp, 0..4 */
+    double true_count;          /* the count the wager was chosen from */
+    bool   capped_table;        /* the spread wanted more than BJ_BET_MAX */
+    bool   capped_bankroll;     /* ...or more than the bankroll could cover */
+} bj_bet_plan_t;
+
+/* The multiple of the base unit a true count asks for. */
+long bj_count_bet_units(double true_count);
+
+/*
+ * The wager to place before the next deal, in half-credits: the ramp's
+ * multiple of `unit`, held down to the table maximum and to whole credits
+ * the bankroll can actually cover.  Call it between rounds, with a count
+ * that already covers every card of the previous one.
+ */
+void bj_count_bet(const bj_session_t *s, const bj_count_t *c, long unit,
+                  bj_bet_plan_t *out);
 
 const char *bj_result_word(bj_result_t r);
 const char *bj_action_word(bj_action_t a);

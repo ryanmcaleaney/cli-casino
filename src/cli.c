@@ -122,6 +122,8 @@ int cli_parse(int argc, char **argv, cli_t *out, char *err, size_t errlen)
                 out->counting = true;
             } else if (strcmp(arg, "--basic") == 0) {
                 out->basic = true;
+            } else if (strcmp(arg, "--count-bet") == 0) {
+                out->count_bet = true;
             } else if (strncmp(arg, "--seed", 6) == 0 &&
                        (arg[6] == '\0' || arg[6] == '=')) {
                 if (opt_value(argc, argv, &i, "--seed", &val, err, errlen))

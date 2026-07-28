@@ -330,6 +330,117 @@ expect_grep "basic rejected message" "only available for blackjack" \
 expect_grep "basic in global help" "basic.*blackjack only" $C --help
 expect_grep "basic in bj help" "S17, DAS, late" $C blackjack --list-bets
 
+# --- blackjack --count-bet (Hi-Lo true-count bet ramp) -------------------
+expect_exit "bj count-bet single round" 0 \
+    sh -c "$C blackjack --basic --count-bet --seed 123 </dev/null"
+expect_exit "bj count-bet runs"       0 \
+    $C blackjack --basic --count-bet --runs 100 --seed 1
+expect_exit "bj count-bet iterations" 0 \
+    $C blackjack --basic --count-bet --iterations 100 --stats --seed 1
+expect_exit "bj count-bet quiet"      0 \
+    $C blackjack --basic --count-bet --quiet --runs 100 --seed 1
+expect_exit "bj count-bet json"       0 \
+    $C blackjack --basic --count-bet --json --runs 100 --seed 1
+
+# a visible round shows the count and the wager it chose, before the cards
+expect_grep "bj count-bet shows count" "Running count: +0" \
+    $C blackjack --basic --count-bet --seed 1
+expect_grep "bj count-bet shows true count" "True count: +0.0" \
+    $C blackjack --basic --count-bet --seed 1
+expect_grep "bj count-bet shows ramp" "Bet ramp: 1 unit" \
+    $C blackjack --basic --count-bet --seed 1
+expect_grep "bj count-bet shows wager" "^Wager: 25" \
+    $C blackjack --basic --count-bet --seed 1
+# a fresh shoe is a zero count, so the opening wager is one unit
+expect_grep "bj count-bet opens at one unit" "^Wager: 10" \
+    $C blackjack bet:10 --basic --count-bet --seed 1
+
+# stats output in all three formats
+expect_grep "bj count-bet stats heading" "Betting: Hi-Lo true-count 1-8 spread" \
+    $C blackjack --basic --count-bet --runs 200 --seed 7
+expect_grep "bj count-bet stats table" "OPENING BET" \
+    $C blackjack --basic --count-bet --runs 200 --seed 7
+expect_grep "bj count-bet stats bands" "+4 or more" \
+    $C blackjack --basic --count-bet --runs 200 --seed 7
+expect_grep "bj count-bet quiet keys" "strategy=basic betting=count" \
+    $C blackjack --basic --count-bet --runs 200 --seed 7 --quiet
+expect_grep "bj count-bet quiet buckets" "bet_1u=[0-9]* bet_2u=[0-9]*" \
+    $C blackjack --basic --count-bet --runs 200 --seed 7 --quiet
+expect_grep "bj count-bet json strategy" '"strategy":"basic"' \
+    $C blackjack --basic --count-bet --runs 200 --seed 7 --json
+expect_grep "bj count-bet json betting" \
+    '"betting":{"mode":"hilo_true_count","spread":"1-8"' \
+    $C blackjack --basic --count-bet --runs 200 --seed 7 --json
+# a flat game says so too, and grows no betting object
+expect_grep "bj flat json strategy" '"strategy":"basic"}' \
+    $C blackjack --basic --runs 200 --seed 7 --json
+
+# a fixed seed is reproducible
+a=$($C blackjack --basic --count-bet --runs 200 --seed 42 --json)
+b=$($C blackjack --basic --count-bet --runs 200 --seed 42 --json)
+[ "$a" = "$b" ] && ok || bad "bj count-bet seed is deterministic"
+
+# every round is bet from exactly one ramp step and one true-count band
+n=$($C blackjack --basic --count-bet --runs 2000 --seed 3 --json |
+    sed 's/.*"multipliers":{\([^}]*\)}.*/\1/' | tr ',' '\n' |
+    sed 's/.*://' | awk '{ s += $1 } END { print s }')
+[ "$n" -eq 2000 ] && ok || bad "bj count-bet multiplier buckets sum (got $n)"
+n=$($C blackjack --basic --count-bet --runs 2000 --seed 3 --json |
+    sed 's/.*"true_count":{\([^}]*\)}.*/\1/' | tr ',' '\n' |
+    sed 's/.*://' | awk '{ s += $1 } END { print s }')
+[ "$n" -eq 2000 ] && ok || bad "bj count-bet true-count buckets sum (got $n)"
+
+# the spread is really used: the ramp reaches its top and its bottom
+$C blackjack --basic --count-bet --runs 2000 --seed 3 --json | awk '
+    { match($0, /"1":[0-9]+/); one = substr($0, RSTART + 4, RLENGTH - 4)
+      match($0, /"8":[0-9]+/); top = substr($0, RSTART + 4, RLENGTH - 4)
+      print (one + 0 > 0 && top + 0 > 0 && one + 0 < 2000) ? "OK" : "BAD" }' |
+    grep -q OK && ok || bad "bj count-bet spreads its wagers"
+
+# the opening wager stays inside the ramp: 25 up to 8 x 25, average between
+$C blackjack --basic --count-bet --runs 2000 --seed 3 --json |
+    sed 's/.*"average_initial_bet":\([0-9.]*\),"minimum_initial_bet":\([0-9.]*\),"maximum_initial_bet":\([0-9.]*\).*/\1 \2 \3/' |
+    awk '{ print ($2 <= $1 && $1 <= $3 && $2 >= 5 && $3 == 200) ? "OK" : "BAD" }' |
+    grep -q OK && ok || bad "bj count-bet opening wager average, min and max"
+
+# bet:N is the unit, not a fixed wager, and the table maximum caps the top
+expect_grep "bj count-bet unit from bet" '"base_unit":10.0' \
+    $C blackjack bet:10 --basic --count-bet --runs 200 --seed 3 --json
+expect_grep "bj count-bet unit ramps" '"maximum_initial_bet":80.0' \
+    $C blackjack bet:10 --basic --count-bet --runs 2000 --seed 3 --json
+$C blackjack bet:100 --basic --count-bet --runs 2000 --seed 3 --json | awk '
+    { match($0, /"maximum_initial_bet":[0-9.]+/)
+      m = substr($0, RSTART + 22, RLENGTH - 22)
+      match($0, /"capped_table":[0-9]+/); c = substr($0, RSTART + 15, RLENGTH - 15)
+      print (m + 0 == 500 && c + 0 > 0) ? "OK" : "BAD" }' |
+    grep -q OK && ok || bad "bj count-bet table maximum caps the spread"
+
+# it is bet sizing only: insurance is still declined every time
+$C blackjack --basic --count-bet --runs 2000 --seed 3 --json |
+    grep -q '"insurance_bets":0,"insurance_wins":0' &&
+    ok || bad "bj count-bet never takes insurance"
+# and the ramp is worth something: it beats a flat basic-strategy game
+$C blackjack --basic --count-bet --runs 20000 --seed 11 --json |
+    sed 's/.*"return_per_unit":\([0-9.]*\).*/\1/' |
+    awk '{ print ($1 > 0.99 && $1 < 1.05) ? "OK" : "BAD" }' |
+    grep -q OK && ok || bad "bj count-bet return above a flat game"
+
+# --count-bet sizes wagers for a hand the strategy engine plays
+expect_exit "bj count-bet needs basic"   2 $C blackjack --count-bet --runs 1000
+expect_exit "bj count-bet not scripted"  2 $C blackjack s --count-bet --runs 1000
+expect_grep "bj count-bet needs basic message" "requires --basic" \
+    sh -c "$C blackjack --count-bet --runs 1000 2>&1"
+expect_exit "bj count-bet with gui"      2 $C blackjack --gui --count-bet
+expect_exit "bj count-bet with counting" 2 $C blackjack --counting --count-bet
+expect_exit "count-bet rejected roulette"   2 $C roulette red --count-bet
+expect_exit "count-bet rejected videopoker" 2 $C videopoker --count-bet
+expect_grep "count-bet rejected message" "only available for blackjack" \
+    sh -c "$C roulette red --count-bet 2>&1"
+
+expect_grep "count-bet in global help" "count-bet.*blackjack --basic only" \
+    $C --help
+expect_grep "count-bet in bj help" "TC +4+ *8 units" $C blackjack --list-bets
+
 ln -sf casino blackjack
 expect_grep "bj symlink invocation" '"game":"blackjack"' \
     sh -c "./blackjack --seed 42 s --json"
@@ -376,6 +487,17 @@ if ${CC:-cc} -std=c11 -Isrc -o build/bj_basic_test tests/bj_basic.c \
     expect_exit "bj automatic basic play checks" 0 ./build/bj_basic_test
 else
     bad "bj automatic basic play test did not build"
+fi
+
+# the Hi-Lo bet ramp: its boundaries, the table and bankroll limits, and
+# the sequencing around a round (count settled and shoe decided before the
+# wager is chosen).  See tests/bj_countbet.c.
+if ${CC:-cc} -std=c11 -Isrc -o build/bj_countbet_test tests/bj_countbet.c \
+        src/games/bj_strategy.c src/games/blackjack.c src/cardart.c \
+        src/cards.c src/cli.c src/output.c src/rng.c >/dev/null 2>&1; then
+    expect_exit "bj true-count bet ramp checks" 0 ./build/bj_countbet_test
+else
+    bad "bj true-count bet ramp test did not build"
 fi
 
 # --- baccarat -----------------------------------------------------------

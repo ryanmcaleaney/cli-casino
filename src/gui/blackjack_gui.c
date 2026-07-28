@@ -54,12 +54,7 @@ typedef struct {
 
 static int round_card_count(const bj_session_t *s)
 {
-    const bj_round_t *r = &s->round;
-    int n = r->ndealer;
-
-    for (int i = 0; i < r->nhands; i++)
-        n += r->hands[i].n;
-    return n;
+    return bj_round_cards(s);
 }
 
 static void start_deal(bjgui_t *v)
@@ -151,11 +146,8 @@ static int visible_dealer(const bjgui_t *v, int cards)
 
 /* ---- Hi-Lo counting: which dealt cards the player has been shown ------- */
 
-/*
- * Every card drawn during a round ends up in a hand, so the round's first
- * card sits at `dealt - round_card_count` and the dealer's hole card is
- * the fourth of them (the deal order is player, dealer, player, hole).
- */
+/* The round's first card, for lining the deal animation up with the shoe;
+ * the engine works out where the face-down hole card sits. */
 static int round_first_dealt(const bjgui_t *v)
 {
     return bj_dealt_count(&v->s) - round_card_count(&v->s);
@@ -163,9 +155,7 @@ static int round_first_dealt(const bjgui_t *v)
 
 static int hole_dealt_index(const bjgui_t *v)
 {
-    if (v->s.round.ndealer < 2)
-        return -1;                  /* no round in progress */
-    return round_first_dealt(v) + 3;
+    return bj_hole_index(&v->s);
 }
 
 /* Cards on the felt, in deal order: the opening four arrive with the

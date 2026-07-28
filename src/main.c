@@ -80,6 +80,8 @@ static void global_usage(FILE *f)
         "  --counting      GUI Hi-Lo counting trainer "
         "(blackjack --gui only)\n"
         "  --basic         automatic basic strategy (blackjack only)\n"
+        "  --count-bet     Hi-Lo true-count bet ramp "
+        "(blackjack --basic only)\n"
         "\n"
         "games:\n");
     for (int i = 0; i < NGAMES; i++)
@@ -162,6 +164,11 @@ int main(int argc, char **argv)
     }
     if (cli.basic && strcmp(game->name, "blackjack") != 0) {
         fprintf(stderr, "%s: --basic is only available for blackjack\n",
+                game->name);
+        return 2;
+    }
+    if (cli.count_bet && strcmp(game->name, "blackjack") != 0) {
+        fprintf(stderr, "%s: --count-bet is only available for blackjack\n",
                 game->name);
         return 2;
     }
