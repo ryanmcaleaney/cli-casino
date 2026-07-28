@@ -108,6 +108,7 @@ Games can be selected as the first argument to `casino`:
 ./casino war --seed 17 war
 ./casino threecard --seed 1 ante:25 pairplus:5 play
 ./casino letitride --seed 3 bet:25 ride,ride
+./casino caribbeanstud --seed 7 ante:25 raise
 ```
 
 After running `make symlinks` or installing the project, each game can also be
@@ -147,6 +148,15 @@ is paid separately from a tens-or-better pay table. A pulled wager is
 returned and never counts as gambled. Simulation with `--runs` requires
 scripted decisions such as `ride,ride` or `pull,ride`.
 
+`caribbeanstud` deals five cards each from a single deck, with one dealer
+card face up. After seeing the hand the player takes `raise` (a second wager
+of exactly twice the ante) or `fold`; the dealer qualifies with ace-king high
+or better. A non-qualifying dealer pays the ante 1:1 and pushes the raise,
+while a winning raise is paid from a pay table running from 1:1 for a high
+card to 100:1 for a royal flush. The progressive jackpot side bet is not
+included. Simulation with `--runs` plays Caribbean Stud basic strategy unless
+a `raise` or `fold` is scripted.
+
 `war` deals one card each from a six-deck shoe, ace high. A tie is resolved
 with `war` (match the wager, burn three cards, one more card each) or
 `surrender` (lose half the wager); supplying neither prompts interactively.
@@ -155,7 +165,8 @@ Simulation with `--runs` requires one of the two scripted tie strategies.
 ## Graphical games
 
 Raylib builds provide graphical frontends for video poker, baccarat,
-blackjack, Ride the Bus, three card poker, and Let It Ride:
+blackjack, Ride the Bus, three card poker, Let It Ride, and Caribbean
+Stud:
 
 ```sh
 casino videopoker --gui
@@ -164,6 +175,7 @@ casino blackjack --gui
 casino ridethebus --gui
 casino threecard --gui
 casino letitride --gui
+casino caribbeanstud --gui
 ```
 
 Video poker also has a terminal trainer and a graphical optimal-play mode.

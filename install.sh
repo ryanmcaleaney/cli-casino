@@ -4,7 +4,7 @@ set -eu
 
 PREFIX=/usr/local
 DESTDIR=${DESTDIR:-}
-PROGRAMS='roulette coin dice sicbo baccarat blackjack craps slots videopoker ridethebus war threecard chuckaluck bigsix'
+PROGRAMS='roulette coin dice sicbo baccarat blackjack craps slots videopoker ridethebus war threecard caribbeanstud chuckaluck bigsix'
 ASSET_DIR=Assets
 
 usage() {

@@ -1224,7 +1224,8 @@ expect_exit "roulette counting rejected" 2 $C roulette --counting
 expect_grep "counting in global help"  "counting.*Hi-Lo" $C blackjack --help
 # missing assets (or a CLI-only build) must fail cleanly, never crash
 root=$PWD
-for g in videopoker baccarat blackjack ridethebus threecard letitride; do
+for g in videopoker baccarat blackjack ridethebus threecard letitride \
+         caribbeanstud; do
     out=$(cd /tmp && "$root/casino" $g --gui 2>&1)
     case "$out" in
     *"missing asset"*|*"no GUI support"*) ok ;;
@@ -2185,6 +2186,382 @@ if ${CC:-cc} -std=c11 -Isrc -o build/lir_front_test tests/lir_front.c \
     expect_exit "lir session checks" 0 ./build/lir_front_test
 else
     bad "lir frontend test did not build"
+fi
+
+# --- caribbean stud poker (ante/raise, ace-king qualifier) ---------------
+# registered rather than planned
+expect_grep "cs in game list" "^  caribbeanstud  *caribbean stud (ante/raise" \
+    $C --help
+expect_grep "cs list-bets"    "caribbean stud poker: five cards each" \
+    $C caribbeanstud --list-bets
+expect_grep "cs help works"   "usage:"  $C caribbeanstud --help
+# the raise pay table in the help text is read from the engine
+expect_grep "cs lists royal 100"  "^  Royal Flush      100:1$" \
+    $C caribbeanstud --list-bets
+expect_grep "cs lists sf 50"      "^  Straight Flush    50:1$" \
+    $C caribbeanstud --list-bets
+expect_grep "cs lists quads 20"   "^  Four of a Kind    20:1$" \
+    $C caribbeanstud --list-bets
+expect_grep "cs lists boat 7"     "^  Full House         7:1$" \
+    $C caribbeanstud --list-bets
+expect_grep "cs lists pair 1"     "^  Pair               1:1$" \
+    $C caribbeanstud --list-bets
+expect_grep "cs ante pays 1:1"    "the ante always pays 1:1" \
+    $C caribbeanstud --list-bets
+expect_grep "cs no progressive"   "progressive jackpot side bet is not part" \
+    $C caribbeanstud --list-bets
+expect_grep "cs documents qualifier" "dealer qualifies with ace-king high" \
+    $C caribbeanstud --list-bets
+expect_grep "cs documents the raise" "raise wager of exactly twice the ante" \
+    $C caribbeanstud --list-bets
+
+# pure rule predicates (self-test, no RNG involved)
+expect_exit "cs rule self-test passes" 0 $C caribbeanstud check
+expect_grep "cs check no failures" "check: 51 passed, 0 failed" \
+    $C caribbeanstud check
+# dealer qualification: ace-king high or better
+expect_grep "cs A-K qualifies"    "^qualify A-K high  *qualifies " \
+    $C caribbeanstud check
+expect_grep "cs A-Q does not"     "^qualify A-Q high  *no " \
+    $C caribbeanstud check
+expect_grep "cs K-Q does not"     "^qualify K-Q high  *no " \
+    $C caribbeanstud check
+expect_grep "cs low pair qualifies" "^qualify low pair  *qualifies " \
+    $C caribbeanstud check
+expect_grep "cs ace alone does not" "^qualify A high only  *no " \
+    $C caribbeanstud check
+# the wheel is the low straight, and comparison falls through to kickers
+expect_grep "cs wheel is low"     "^wheel is the low straight  *lower " \
+    $C caribbeanstud check
+expect_grep "cs kickers compare"  "^pair kicker decides  *higher " \
+    $C caribbeanstud check
+expect_grep "cs equal hands push" "^identical ranks push  *equal " \
+    $C caribbeanstud check
+# settlement branches
+expect_grep "cs fold loses ante"  "^fold loses ante only  *a-25 r+0 n-25 w25 " \
+    $C caribbeanstud check
+expect_grep "cs no qualify pays"  "^no qualify pays ante  *a+25 r+0 n+25 w75 " \
+    $C caribbeanstud check
+expect_grep "cs dealer takes both" "^dealer wins takes both  *a-25 r-50 n-75 " \
+    $C caribbeanstud check
+expect_grep "cs push returns all" "^equal hands push both  *a+0 r+0 n+0 w75 " \
+    $C caribbeanstud check
+# every raise multiplier
+expect_grep "cs raise high card"  "^raise high card 1:1  *a+25 r+50 " \
+    $C caribbeanstud check
+expect_grep "cs raise two pair"   "^raise two pair 2:1  *a+25 r+100 " \
+    $C caribbeanstud check
+expect_grep "cs raise trips"      "^raise trips 3:1  *a+25 r+150 " \
+    $C caribbeanstud check
+expect_grep "cs raise straight"   "^raise straight 4:1  *a+25 r+200 " \
+    $C caribbeanstud check
+expect_grep "cs raise flush"      "^raise flush 5:1  *a+25 r+250 " \
+    $C caribbeanstud check
+expect_grep "cs raise full house" "^raise full house 7:1  *a+25 r+350 " \
+    $C caribbeanstud check
+expect_grep "cs raise quads"      "^raise quads 20:1  *a+25 r+1000 " \
+    $C caribbeanstud check
+expect_grep "cs raise sf"         "^raise straight flush 50:1  *a+25 r+2500 " \
+    $C caribbeanstud check
+expect_grep "cs raise royal"      "^raise royal flush 100:1  *a+25 r+5000 " \
+    $C caribbeanstud check
+# the strategy, from the CLI
+expect_grep "cs strat pair raises" "^strat pair raises  *raise " \
+    $C caribbeanstud check
+expect_grep "cs strat A-Q folds"   "^strat A-Q folds  *fold " \
+    $C caribbeanstud check
+expect_grep "cs strat match raises" "^strat A-K match raises  *raise " \
+    $C caribbeanstud check
+expect_grep "cs strat no match folds" "^strat A-K no match folds  *fold " \
+    $C caribbeanstud check
+
+# normal output: the whole round, both categories and the breakdown
+expect_grep "cs normal shows player" "^Player:  *Js Qc 8s Jh 8d$" \
+    $C caribbeanstud r --seed 7
+expect_grep "cs normal shows hand"   "^Hand:  *Two Pair$" \
+    $C caribbeanstud r --seed 7
+expect_grep "cs normal shows upcard" "^Up-card:  *Ad$" \
+    $C caribbeanstud r --seed 7
+expect_grep "cs normal echoes choice" "^> raise$" $C caribbeanstud r --seed 7
+expect_grep "cs normal shows dealer" "^Dealer:  *Ad 2h 3d Jd 3h$" \
+    $C caribbeanstud r --seed 7
+expect_grep "cs normal shows qualify" "^Qualify:  *yes (ace-king or better)$" \
+    $C caribbeanstud r --seed 7
+expect_grep "cs normal shows result" "^Result:      WIN$" \
+    $C caribbeanstud r --seed 7
+expect_grep "cs normal shows ante"   "^Ante:  *+25$" \
+    $C caribbeanstud r --seed 7
+expect_grep "cs normal shows raise"  "^Raise:  *+100$" \
+    $C caribbeanstud r --seed 7
+expect_grep "cs normal shows odds"   "^Raise pays:  *2:1  (Two Pair)$" \
+    $C caribbeanstud r --seed 7
+expect_grep "cs normal shows net"    "^Net:  *+125$" \
+    $C caribbeanstud r --seed 7
+expect_grep "cs normal shows bankroll" "^Bankroll:  *1125$" \
+    $C caribbeanstud r --seed 7
+expect_grep "cs normal shows exposure" "^Ante: 25   Raise: 50   Bankroll: 1000$" \
+    $C caribbeanstud r --seed 7
+# a non-qualifying dealer and a fold say so in words
+expect_grep "cs says no qualify" "^Dealer does not qualify: ante wins 1:1, raise pushes$" \
+    $C caribbeanstud r --seed 2
+expect_grep "cs no qualify pushes raise" "^Raise:  *0  (push)$" \
+    $C caribbeanstud r --seed 2
+expect_grep "cs says folded" "^Player folded, ante lost$" \
+    $C caribbeanstud f --seed 2
+expect_grep "cs fold shows no raise line" "^Wagered:  *25$" \
+    $C caribbeanstud f --seed 2
+expect_grep "cs art cards" "┌─────────┐" \
+    env CASINO_CARDS=art $C caribbeanstud r --seed 7
+
+# the dealer's four hole cards are never printed before the decision
+$C caribbeanstud r --seed 7 | awk '
+/^\[r\]aise/ { seen_prompt = 1 }
+/^Dealer:/   { if (!seen_prompt) early = 1 }
+END { print (early ? "EARLY" : "HIDDEN") }' | grep -q HIDDEN && ok || \
+    bad "cs dealer stays hidden until the decision"
+# ... and the up-card is on the table before it
+$C caribbeanstud r --seed 7 | awk '
+/^Up-card:/  { if (!seen_prompt) early = 1 }
+/^\[r\]aise/ { seen_prompt = 1 }
+END { print (early ? "SHOWN" : "MISSING") }' | grep -q SHOWN && ok || \
+    bad "cs up-card is face up during the decision"
+
+# interactive: the same round, driven from stdin
+expect_grep "cs prompts for a decision" "\[r\]aise 50 / \[f\]old" \
+    sh -c "printf 'r\n' | $C caribbeanstud --seed 7"
+expect_grep "cs interactive raise" "^Result:      WIN$" \
+    sh -c "printf 'raise\n' | $C caribbeanstud --seed 7"
+expect_grep "cs interactive fold" "^Result:      FOLD$" \
+    sh -c "printf 'f\n' | $C caribbeanstud --seed 7"
+expect_grep "cs reprompts on bad input" "invalid choice" \
+    sh -c "printf 'hit\nf\n' | $C caribbeanstud --seed 7"
+expect_grep "cs EOF folds" "^Result:      FOLD$" \
+    sh -c "$C caribbeanstud --seed 7 </dev/null"
+expect_exit "cs interactive EOF" 0 sh -c "$C caribbeanstud --seed 7 </dev/null"
+
+# quiet and JSON rounds
+expect_grep "cs quiet win" \
+    "^WIN player=Js,Qc,8s,Jh,8d hand=two_pair action=raise upcard=Ad " \
+    $C caribbeanstud r --seed 7 --quiet
+expect_grep "cs quiet settlement" "ante=+25 raise=+100 wagered=75 returned=200 net=+125 bankroll=1125$" \
+    $C caribbeanstud r --seed 7 --quiet
+expect_grep "cs quiet no qualify" "qualifies=no ante=+25 raise=0 " \
+    $C caribbeanstud r --seed 2 --quiet
+expect_grep "cs quiet fold" "^FOLD player=" $C caribbeanstud f --seed 7 --quiet
+expect_grep "cs json game key"  '"game":"caribbeanstud"' \
+    $C caribbeanstud r --seed 7 --json
+expect_grep "cs json player"    '"cards":\["Js","Qc","8s","Jh","8d"\],"category":"two_pair"' \
+    $C caribbeanstud r --seed 7 --json
+expect_grep "cs json upcard"    '"dealer":{"upcard":"Ad"' \
+    $C caribbeanstud r --seed 7 --json
+expect_grep "cs json outcome"   '"dealer_qualifies":true,"outcome":"player"' \
+    $C caribbeanstud r --seed 7 --json
+expect_grep "cs json settlement" '"ante_net":25,"raise_net":100,"wagered":75,"returned":200,"net":125' \
+    $C caribbeanstud r --seed 7 --json
+expect_grep "cs json fold"      '"outcome":"fold","ante_net":-25,"raise_net":0' \
+    $C caribbeanstud f --seed 7 --json
+expect_grep "cs json no qualify" '"dealer_qualifies":false,"outcome":"no_qualify"' \
+    $C caribbeanstud r --seed 2 --json
+# a push returns everything and pays nothing
+expect_grep "cs push settles flat" '"outcome":"push","ante_net":0,"raise_net":0' \
+    $C caribbeanstud r --seed 2919 --json
+# the JSON round object has no duplicate keys
+n=$($C caribbeanstud r --seed 7 --json | tr ',' '\n' | grep -c '"ante":')
+[ "$n" -eq 1 ] && ok || bad "cs json ante key appears once (got $n)"
+
+# wagers: the raise is always twice the ante, whatever the ante is
+expect_grep "cs ante 10 raises 20" '"ante":10,"raise":20' \
+    $C caribbeanstud ante:10 r --seed 7 --json
+expect_grep "cs ante 100 raises 200" '"ante":100,"raise":200' \
+    $C caribbeanstud ante:100 r --seed 7 --json
+expect_grep "cs ante 500 raises 1000" '"ante":500,"raise":1000' \
+    $C caribbeanstud ante:500 r --seed 7 --json
+# a large ante buys in for a whole round rather than clamping the wager
+expect_grep "cs large ante funds the raise" '"wagered":1500,"returned":4000' \
+    $C caribbeanstud ante:500 r --seed 7 --json
+# folding never stakes the raise
+expect_grep "cs fold stakes the ante only" '"raise":0,' \
+    $C caribbeanstud f --seed 7 --json
+
+# fixed hands settle exactly as the rules say
+expect_grep "cs deal royal 100:1" \
+    "^WIN player=10h,Jh,Qh,Kh,Ah hand=royal_flush .* raise=+5000 " \
+    $C caribbeanstud deal:10h,jh,qh,kh,ah,as,ks,8c,5c,3d r --quiet
+expect_grep "cs deal no qualify" "qualifies=no ante=+25 raise=0 " \
+    $C caribbeanstud deal:ah,kd,9c,5s,3d,2h,7d,9s,5c,3h r --quiet
+expect_grep "cs deal push" "^PUSH " \
+    $C caribbeanstud deal:ah,kd,9c,5s,3d,as,kc,9d,5h,3c r --quiet
+expect_grep "cs deal fold" "^FOLD .* net=-25 " \
+    $C caribbeanstud deal:ah,ad,ac,as,kd,2h,7d,9c,5s,3c f --quiet
+
+# determinism
+a=$($C caribbeanstud r --seed 42 --json)
+b=$($C caribbeanstud r --seed 42 --json)
+[ "$a" = "$b" ] && ok || bad "cs seeded rounds identical"
+a=$($C caribbeanstud r --seed 42 --json)
+b=$($C caribbeanstud r --seed 43 --json)
+[ "$a" != "$b" ] && ok || bad "cs different seeds differ"
+# the ante does not touch the deal, so one seed is one hand
+a=$($C caribbeanstud r --seed 42 --json | sed 's/.*"player"/"player"/;s/,"action".*//')
+b=$($C caribbeanstud ante:100 r --seed 42 --json | sed 's/.*"player"/"player"/;s/,"action".*//')
+[ "$a" = "$b" ] && ok || bad "cs the ante does not change the deal"
+n=$($C caribbeanstud r --seed 3 --iterations 5 --quiet | wc -l)
+[ "$n" -eq 5 ] && ok || bad "cs iterations produce 5 lines (got $n)"
+
+# validation
+expect_exit "cs unknown argument"   2 $C caribbeanstud banana
+expect_exit "cs two actions"        2 $C caribbeanstud raise fold
+expect_exit "cs two actions short"  2 $C caribbeanstud r f
+expect_exit "cs action with value"  2 $C caribbeanstud r:1
+expect_exit "cs blackjack action"   2 $C caribbeanstud hit
+expect_exit "cs stand rejected"     2 $C caribbeanstud s
+expect_exit "cs double rejected"    2 $C caribbeanstud double
+expect_exit "cs split rejected"     2 $C caribbeanstud split
+expect_exit "cs draw rejected"      2 $C caribbeanstud draw
+expect_exit "cs hold rejected"      2 $C caribbeanstud hold:1
+expect_exit "cs play rejected"      2 $C caribbeanstud play
+expect_exit "cs ante zero"          2 $C caribbeanstud r ante:0
+expect_exit "cs ante negative"      2 $C caribbeanstud r ante:-5
+expect_exit "cs ante too big"       2 $C caribbeanstud r ante:100000
+expect_exit "cs ante malformed"     2 $C caribbeanstud r ante:x
+expect_exit "cs ante no value"      2 $C caribbeanstud r ante
+expect_exit "cs deal too few"       2 $C caribbeanstud r deal:2h,3h,4h,5h,6h
+expect_exit "cs deal too many" 2 \
+    $C caribbeanstud r deal:2h,3h,4h,5h,6h,7h,8h,9h,10h,jh,qh
+expect_exit "cs deal duplicate" 2 \
+    $C caribbeanstud r deal:ah,kd,9c,5s,3d,ah,qs,8d,6c,2h
+expect_exit "cs deal bad card" 2 \
+    $C caribbeanstud r deal:2x,kd,9c,5s,3d,kh,qs,8d,6c,2h
+expect_exit "cs deal cannot run" 2 \
+    $C caribbeanstud r deal:ah,kd,9c,5s,3d,kh,qs,8d,6c,2h --runs 10
+expect_exit "cs check is alone"     2 $C caribbeanstud check ante:25
+expect_exit "cs unknown option"     2 $C caribbeanstud r --nope
+expect_exit "cs find-seed rejected" 2 $C caribbeanstud --find-seed royal_flush
+expect_exit "cs trainer rejected"   2 $C caribbeanstud --trainer
+expect_exit "cs counting rejected"  2 $C caribbeanstud --counting
+expect_exit "cs basic rejected"     2 $C caribbeanstud --basic
+expect_exit "cs valid ante ok"      0 $C caribbeanstud r ante:1 --seed 1
+expect_exit "cs valid ante max ok"  0 $C caribbeanstud r ante:500 --seed 1
+
+# simulation: basic strategy by default, no flag needed
+expect_grep "cs runs uses basic" "Strategy: basic" \
+    $C caribbeanstud --runs 100 --seed 1
+expect_grep "cs runs table" "^RESULT" $C caribbeanstud --runs 100 --seed 1
+expect_grep "cs runs shows decisions" "^raises" $C caribbeanstud --runs 100 --seed 1
+expect_grep "cs runs shows dealer" "^dealer qualifies" \
+    $C caribbeanstud --runs 100 --seed 1
+expect_grep "cs runs shows rebuys" "^Rebuys:" $C caribbeanstud --runs 100 --seed 1
+# a scripted action overrides the strategy for every round
+expect_grep "cs runs scripted raise" "strategy=raise rounds=100 raises=100 folds=0 " \
+    $C caribbeanstud r --runs 100 --seed 1 --quiet
+expect_grep "cs runs scripted fold" "strategy=fold rounds=100 raises=0 folds=100 " \
+    $C caribbeanstud f --runs 100 --seed 1 --quiet
+expect_grep "cs runs quiet game key" "^game=caribbeanstud runs=1000 " \
+    $C caribbeanstud --runs 1000 --seed 1 --quiet
+n=$($C caribbeanstud --runs 1000 --seed 1 --quiet | wc -l)
+[ "$n" -eq 1 ] && ok || bad "cs runs quiet is a single line (got $n)"
+n=$($C caribbeanstud --runs 1000 --seed 1 --json | wc -l)
+[ "$n" -eq 1 ] && ok || bad "cs runs json is a single line (got $n)"
+a=$($C caribbeanstud --runs 5000 --seed 5 --quiet)
+b=$($C caribbeanstud --runs 5000 --seed 5 --quiet)
+[ "$a" = "$b" ] && ok || bad "cs seeded simulation is deterministic"
+
+# every round settles, and the totals reconcile
+$C caribbeanstud --runs 50000 --seed 3 --json | awk '
+{
+  n = split($0, f, /[{},]/)
+  for (i = 1; i <= n; i++) {
+    split(f[i], kv, ":")
+    gsub(/"/, "", kv[1])
+    v[kv[1]] = kv[2]
+  }
+  hands = v["high_card"] + v["pair"] + v["two_pair"] + v["three_of_a_kind"]
+  hands = hands + v["straight"] + v["flush"] + v["full_house"]
+  hands = hands + v["four_of_a_kind"] + v["straight_flush"] + v["royal_flush"]
+  ok = v["rounds"] == 50000 &&
+       v["player_win"] + v["dealer_win"] + v["push"] + v["fold"] == v["rounds"] &&
+       v["raise"] + v["fold"] == v["rounds"] &&
+       v["qualified"] + v["not_qualified"] == v["raise"] &&
+       v["no_qualify"] == v["not_qualified"] &&
+       v["ante_wagered"] == v["rounds"] * 25 &&
+       v["raise_wagered"] == v["raise"] * 50 &&
+       v["total_wagered"] == v["ante_wagered"] + v["raise_wagered"] &&
+       v["net"] == v["returned"] - v["total_wagered"]
+  print (ok ? "CS_OK" : "CS_BAD")
+}' | grep -q CS_OK && ok || bad "cs simulation totals reconcile"
+# the player hand distribution is counted over every round dealt
+$C caribbeanstud --runs 50000 --seed 3 --json | awk '
+{
+  sub(/.*"player_hands":\{/, "")
+  sub(/\},"dealer_hands".*/, "")
+  n = split($0, f, ",")
+  for (i = 1; i <= n; i++) { split(f[i], kv, ":"); t += kv[2] }
+  print (t == 50000 ? "PH_OK" : "PH_BAD")
+}' | grep -q PH_OK && ok || bad "cs player hands counted every round"
+# the dealer's are counted over the showdowns the raise paid for
+$C caribbeanstud --runs 50000 --seed 3 --json | awk '
+{
+  raises = $0; sub(/.*"raise":/, "", raises); sub(/,.*/, "", raises)
+  sub(/.*"dealer_hands":\{/, "")
+  sub(/\},"raise_wins".*/, "")
+  n = split($0, f, ",")
+  for (i = 1; i <= n; i++) { split(f[i], kv, ":"); t += kv[2] }
+  print (t == raises ? "DH_OK" : "DH_BAD")
+}' | grep -q DH_OK && ok || bad "cs dealer hands counted every showdown"
+
+# sanity against the published game: basic strategy raises about 52% of
+# hands, the dealer qualifies about 56% of showdowns, and the house edge
+# is about 5.2% of the ante
+$C caribbeanstud --runs 200000 --seed 11 --json | awk '
+{
+  n = split($0, f, /[{},]/)
+  for (i = 1; i <= n; i++) {
+    split(f[i], kv, ":")
+    gsub(/"/, "", kv[1])
+    v[kv[1]] = kv[2]
+  }
+  raise_rate = 100 * v["raise"] / v["rounds"]
+  qual_rate = 100 * v["qualified"] / v["raise"]
+  edge = -100 * v["net"] / v["ante_wagered"]
+  ok = raise_rate > 51 && raise_rate < 54 &&
+       qual_rate > 55 && qual_rate < 58 &&
+       edge > 4 && edge < 6.5
+  print (ok ? "EDGE_OK" : "EDGE_BAD " raise_rate " " qual_rate " " edge)
+}' | grep -q EDGE_OK && ok || bad "cs simulation matches the published game"
+
+# GUI gating (the GUI itself needs a display; not run here)
+expect_exit "cs gui with actions" 2 $C caribbeanstud --gui r
+expect_exit "cs gui with ante"    2 $C caribbeanstud --gui ante:25
+expect_exit "cs gui with quiet"   2 $C caribbeanstud --gui --quiet
+expect_exit "cs gui with json"    2 $C caribbeanstud --gui --json
+expect_exit "cs gui with runs"    2 $C caribbeanstud --gui --runs 10
+expect_exit "cs gui with counting" 2 $C caribbeanstud --gui --counting
+expect_exit "cs gui with optimal" 2 $C caribbeanstud --gui --optimal
+
+ln -sf casino caribbeanstud
+expect_grep "cs symlink invocation" '"game":"caribbeanstud"' \
+    sh -c "./caribbeanstud r --seed 7 --json"
+rm -f caribbeanstud
+
+# the engine and session both frontends play through (wagers, funding,
+# reveal gating, settlement).  See tests/cs_front.c.
+if ${CC:-cc} -std=c11 -Isrc -o build/cs_front_test tests/cs_front.c \
+        src/games/caribbeanstud.c src/games/cs_strategy.c src/cardart.c \
+        src/cards.c src/cli.c src/output.c src/poker.c src/rng.c \
+        >/dev/null 2>&1; then
+    expect_exit "cs engine and session checks" 0 ./build/cs_front_test
+else
+    bad "cs engine test did not build"
+fi
+
+# the basic strategy adviser, boundary by boundary.  See tests/cs_strategy.c.
+if ${CC:-cc} -std=c11 -Isrc -o build/cs_strategy_test tests/cs_strategy.c \
+        src/games/caribbeanstud.c src/games/cs_strategy.c src/cardart.c \
+        src/cards.c src/cli.c src/output.c src/poker.c src/rng.c \
+        >/dev/null 2>&1; then
+    expect_exit "cs basic strategy checks" 0 ./build/cs_strategy_test
+else
+    bad "cs strategy test did not build"
 fi
 
 echo
